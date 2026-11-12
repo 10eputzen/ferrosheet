@@ -4,13 +4,40 @@
 mod app;
 mod grid;
 mod loader;
+#[cfg(windows)]
+mod register;
 mod rows;
 mod text;
 
 use eframe::egui;
 
 fn main() -> eframe::Result {
-    let path = std::env::args_os().nth(1).map(std::path::PathBuf::from);
+    let arg = std::env::args_os().nth(1);
+    #[cfg(windows)]
+    if let Some(flag) = arg.as_ref().and_then(|a| a.to_str()) {
+        let result = match flag {
+            "--register" => Some(register::register().map(|_| text::REGISTERED)),
+            "--unregister" => Some(register::unregister().map(|_| text::UNREGISTERED)),
+            _ => None,
+        };
+        if let Some(result) = result {
+            // Release builds have no console, so report in a small dialog.
+            let (level, msg) = match result {
+                Ok(msg) => (rfd::MessageLevel::Info, msg.to_owned()),
+                Err(e) => (
+                    rfd::MessageLevel::Error,
+                    format!("{}: {e}", text::REGISTER_FAILED),
+                ),
+            };
+            rfd::MessageDialog::new()
+                .set_title(text::APP)
+                .set_level(level)
+                .set_description(msg)
+                .show();
+            return Ok(());
+        }
+    }
+    let path = arg.map(std::path::PathBuf::from);
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title(text::APP)

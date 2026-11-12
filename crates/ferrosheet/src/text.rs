@@ -15,6 +15,9 @@ pub const SEARCH_ENTER: &str = "Enter drücken zum Suchen";
 pub const PREV_HIT: &str = "Vorheriger Treffer (Umschalt+F3)";
 pub const NEXT_HIT: &str = "Nächster Treffer (F3)";
 pub const CLOSE_SEARCH: &str = "Suche schließen (Esc)";
+pub const REGISTERED: &str = "ferrosheet ist jetzt unter „Öffnen mit“ eingetragen. In den Einstellungen, die sich gerade öffnen, kannst du es als Standard-App festlegen.";
+pub const UNREGISTERED: &str = "ferrosheet ist nicht mehr mit Tabellen verknüpft.";
+pub const REGISTER_FAILED: &str = "Verknüpfung fehlgeschlagen";
 
 pub fn hit_counter(current: usize, total: usize) -> String {
     format!("{current} von {total}")

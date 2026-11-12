@@ -16,6 +16,7 @@ image = { version = "0.25", optional = true, default-features = false, features 
 
 [target.'cfg(windows)'.dependencies]
 winreg = "0.56"
+windows-sys = { version = "0.61", features = ["Win32_UI_Shell"] }
 
 [features]
 # Saves a screenshot when FERROSHEET_SCREENSHOT is set (docs and visual checks).
