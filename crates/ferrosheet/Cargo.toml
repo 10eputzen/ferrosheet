@@ -9,3 +9,14 @@ authors.workspace = true
 
 [dependencies]
 ferrosheet-core.workspace = true
+eframe = { version = "0.37", default-features = false, features = ["clipboard", "default_fonts", "glow", "wayland", "x11"] }
+rfd = "0.18"
+# Only for the screenshot feature.
+image = { version = "0.25", optional = true, default-features = false, features = ["png"] }
+
+[target.'cfg(windows)'.dependencies]
+winreg = "0.56"
+
+[features]
+# Saves a screenshot when FERROSHEET_SCREENSHOT is set (docs and visual checks).
+screenshot = ["dep:image"]
