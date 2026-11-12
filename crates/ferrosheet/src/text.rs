@@ -53,6 +53,14 @@ macro_rules! texts {
 }
 
 pub const APP: &str = "ferrosheet";
+pub const HOMEPAGE: &str = "https://github.com/10eputzen/ferrosheet";
+
+pub fn version(v: &str) -> String {
+    match lang() {
+        Lang::De => format!("Version {v}"),
+        Lang::En => format!("Version {v}"),
+    }
+}
 
 texts! {
     open: "Öffnen …", "Open …";
@@ -101,6 +109,14 @@ texts! {
     menu_file: "Datei", "File";
     menu_edit: "Bearbeiten", "Edit";
     menu_view: "Ansicht", "View";
+    menu_help: "Hilfe", "Help";
+    about: "Über ferrosheet …", "About ferrosheet …";
+    licence: "Freie Software, MIT- oder Apache-2.0-Lizenz", "Free software, MIT or Apache 2.0 licence";
+    check_updates: "Nach Updates suchen", "Check for updates";
+    checking: "Suche nach Updates …", "Checking for updates …";
+    up_to_date: "Das ist die neueste Version.", "This is the latest version.";
+    check_failed: "Suche fehlgeschlagen", "Check failed";
+    update_off: "Die Update-Suche ist in dieser Version ausgeschaltet.", "Updates are turned off in this build.";
     menu_format: "Format", "Format";
     recent: "Zuletzt geöffnet", "Recent files";
     no_recent: "Noch keine Dateien", "No files yet";

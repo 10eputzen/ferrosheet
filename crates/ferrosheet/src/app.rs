@@ -53,6 +53,7 @@ enum Cmd {
     NewSheet,
     Rename(usize, String),
     DeleteSheet(usize),
+    About,
 }
 
 struct SheetView {
@@ -128,12 +129,18 @@ struct Search {
     dirty: bool,
 }
 
+enum ManualCheck {
+    Checking,
+    Current,
+    Failed(String),
+}
+
 #[derive(Default)]
 enum Update {
     #[default]
     None,
     /// Checking GitHub and downloading in the background.
-    Downloading(Receiver<String>),
+    Downloading(Receiver<update::Found>),
     /// Downloaded; a restart swaps it in.
     Ready(String),
     /// The new version is being started; this window closes once it runs.
@@ -149,6 +156,10 @@ pub struct App {
     search: Search,
     status: Option<(String, f64)>,
     update: Update,
+    /// The About dialog is open.
+    about: bool,
+    /// Result of a check the user asked for in the About dialog.
+    manual_check: Option<ManualCheck>,
     /// Sheet to show once the file is open (after an update restart).
     restore_sheet: Option<usize>,
     /// Asking whether to save before this happens.
@@ -394,6 +405,7 @@ impl App {
             Cmd::Italic => self.toggle(ctx, true),
             Cmd::Style(c) => self.style(ctx, c),
             Cmd::Zoom(z) => self.set_zoom(z),
+            Cmd::About => self.about = true,
             Cmd::SelectCols | Cmd::SelectRows | Cmd::FitCols | Cmd::FitRows => {
                 self.whole_lines(&cmd)
             }
@@ -790,6 +802,9 @@ impl App {
             ui.add_enabled_ui(view, |ui| {
                 ui.menu_button(text::menu_format(), |ui| format_items(ui, &mut cmd, st));
             });
+            ui.menu_button(text::menu_help(), |ui| {
+                item(ui, &mut cmd, text::about(), "", true, Cmd::About);
+            });
         });
         cmd
     }
@@ -1087,7 +1102,19 @@ impl App {
     fn poll_update(&mut self, ctx: &egui::Context) {
         match &self.update {
             Update::Downloading(rx) => match rx.try_recv() {
-                Ok(v) => self.update = Update::Ready(v),
+                Ok(found) => {
+                    self.update = Update::None;
+                    // Only a check the user started reports "current" or a failure.
+                    let asked = matches!(self.manual_check, Some(ManualCheck::Checking));
+                    self.manual_check = match found {
+                        update::Found::Ready(v) => {
+                            self.update = Update::Ready(v);
+                            None
+                        }
+                        update::Found::Current => asked.then_some(ManualCheck::Current),
+                        update::Found::Failed(e) => asked.then_some(ManualCheck::Failed(e)),
+                    };
+                }
                 Err(TryRecvError::Disconnected) => self.update = Update::None,
                 Err(TryRecvError::Empty) => {}
             },
@@ -1144,6 +1171,76 @@ impl App {
     fn update_failed(&mut self, e: String) {
         self.error = Some(e);
         self.error_title = Some(text::update_failed());
+    }
+
+    /// Starts a check the user asked for, or joins the one already running.
+    fn check_now(&mut self, ctx: &egui::Context) {
+        if matches!(self.update, Update::None) {
+            match update::check(ctx.clone()) {
+                Some(rx) => self.update = Update::Downloading(rx),
+                None => {
+                    self.manual_check = Some(ManualCheck::Failed(text::update_off().into()));
+                    return;
+                }
+            }
+        }
+        self.manual_check = Some(ManualCheck::Checking);
+    }
+
+    fn about_modal(&mut self, ctx: &egui::Context) {
+        if !self.about {
+            return;
+        }
+        let (mut check, mut restart) = (false, false);
+        let resp = egui::Modal::new(egui::Id::unique("about")).show(ctx, |ui| {
+            ui.set_width(340.0);
+            ui.heading(text::APP);
+            ui.label(text::version(env!("CARGO_PKG_VERSION")));
+            ui.hyperlink_to("github.com/10eputzen/ferrosheet", text::HOMEPAGE);
+            ui.label(text::licence());
+            ui.add_space(8.0);
+            match (&self.update, &self.manual_check) {
+                (Update::Ready(v), _) => {
+                    restart = ui.button(text::update_ready(v)).clicked();
+                }
+                (Update::Restarting(_), _) => {
+                    ui.horizontal(|ui| {
+                        ui.spinner();
+                        ui.label(text::restarting());
+                    });
+                }
+                (_, Some(ManualCheck::Checking)) => {
+                    ui.horizontal(|ui| {
+                        ui.spinner();
+                        ui.label(text::checking());
+                    });
+                }
+                (_, found) => {
+                    match found {
+                        Some(ManualCheck::Current) => {
+                            ui.label(text::up_to_date());
+                        }
+                        Some(ManualCheck::Failed(e)) => {
+                            ui.label(format!("{}: {e}", text::check_failed()));
+                        }
+                        _ => {}
+                    }
+                    check = ui.button(text::check_updates()).clicked();
+                }
+            }
+            ui.add_space(8.0);
+            ui.button(text::ok()).clicked()
+        });
+        if check {
+            self.check_now(ctx);
+        }
+        if restart {
+            self.restart_for_update(ctx);
+        }
+        if resp.inner || resp.should_close() {
+            self.about = false;
+            self.manual_check = None;
+        }
     }
 
     fn error_modal(&mut self, ctx: &egui::Context) {
@@ -1269,6 +1366,7 @@ impl eframe::App for App {
         self.update_title(&ctx);
         self.confirm_modal(&ctx);
         self.delete_sheet_modal(&ctx);
+        self.about_modal(&ctx);
         self.error_modal(&ctx);
     }
 }
@@ -1765,6 +1863,23 @@ mod tests {
         assert_eq!(v.grid.edit.as_ref().map(|e| e.text.clone()), Some(formula));
         h.key_press(Key::Escape);
         h.run();
+    }
+
+    #[test]
+    fn help_about_shows_the_version_and_checks_for_updates() {
+        let mut h = open(demo());
+        h.get_by_label("Help").click();
+        h.run();
+        h.get_by_label_contains("About").click();
+        h.run();
+        h.get_by_label(&text::version(env!("CARGO_PKG_VERSION")));
+        // Test builds never update, so the check says so instead of failing silently.
+        h.get_by_label(text::check_updates()).click();
+        h.run();
+        h.get_by_label_contains(text::update_off());
+        h.get_by_label(text::ok()).click();
+        h.run();
+        assert!(!h.state().about);
     }
 
     #[test]

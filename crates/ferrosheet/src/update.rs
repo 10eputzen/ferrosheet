@@ -77,33 +77,49 @@ pub fn take_restore(mut args: Vec<OsString>) -> (Option<Restore>, Vec<OsString>)
 }
 
 /// Starts the check and download in the background; the receiver yields the version
-/// once it is downloaded and ready to swap in.
-pub fn check(ctx: eframe::egui::Context) -> Option<Receiver<String>> {
+/// once it is downloaded and ready to swap in, or why there is none.
+pub fn check(ctx: eframe::egui::Context) -> Option<Receiver<Found>> {
     if cfg!(debug_assertions) || std::env::var_os("FERROSHEET_NO_UPDATE").is_some() {
         return None;
     }
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {
-        let url = format!("https://api.github.com/repos/{REPO}/releases/latest");
-        let Ok(out) = cmd("curl")
-            .args(["-fsSL", "--max-time", "10", &url])
-            .output()
-        else {
-            return;
-        };
-        let json = String::from_utf8_lossy(&out.stdout);
-        let Some(tag) = tag_name(&json) else { return };
-        if !is_newer(tag, env!("CARGO_PKG_VERSION")) {
-            return;
-        }
-        let version = tag.trim_start_matches('v');
-        // A failed download stays silent: the next start simply tries again.
-        if download(version).is_ok() {
-            let _ = tx.send(version.to_owned());
-            ctx.request_repaint();
-        }
+        let _ = tx.send(look_for_update());
+        ctx.request_repaint();
     });
     Some(rx)
+}
+
+/// What a check found. The automatic check at start only acts on `Ready`; the others
+/// are shown when the user asked.
+pub enum Found {
+    Ready(String),
+    Current,
+    Failed(String),
+}
+
+fn look_for_update() -> Found {
+    let url = format!("https://api.github.com/repos/{REPO}/releases/latest");
+    let out = match cmd("curl")
+        .args(["-fsSL", "--max-time", "10", &url])
+        .output()
+    {
+        Ok(out) if out.status.success() => out,
+        Ok(out) => return Found::Failed(String::from_utf8_lossy(&out.stderr).trim().into()),
+        Err(e) => return Found::Failed(e.to_string()),
+    };
+    let json = String::from_utf8_lossy(&out.stdout);
+    let Some(tag) = tag_name(&json) else {
+        return Found::Failed("no release found".into());
+    };
+    if !is_newer(tag, env!("CARGO_PKG_VERSION")) {
+        return Found::Current;
+    }
+    let version = tag.trim_start_matches('v');
+    match download(version) {
+        Ok(()) => Found::Ready(version.to_owned()),
+        Err(e) => Found::Failed(e),
+    }
 }
 
 /// Swaps in a downloaded update and starts it with `args`. The caller then closes.
