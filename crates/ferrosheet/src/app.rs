@@ -604,6 +604,7 @@ mod tests {
 
     /// Steps frames until `done` holds; the background loader needs real time.
     fn settle(h: &mut Harness<'_, App>, mut done: impl FnMut(&mut App) -> bool) {
+        h.step(); // process queued input before checking
         let start = Instant::now();
         while !done(h.state_mut()) {
             assert!(
@@ -693,8 +694,9 @@ mod tests {
     fn ctrl_page_down_switches_to_the_next_sheet_and_loads_it() {
         let mut h = open(demo());
         h.key_press_modifiers(Modifiers::COMMAND, Key::PageDown);
-        settle(&mut h, |app| app.active_view().is_some());
-        assert_eq!(h.state().doc.as_ref().unwrap().active, 1);
+        settle(&mut h, |app| {
+            app.doc.as_ref().is_some_and(|d| d.active == 1) && app.active_view().is_some()
+        });
         let v = h.state_mut().active_view().unwrap();
         assert_eq!(v.sheet.display(0, 0), "Bezug auf das erste Blatt");
 
