@@ -459,13 +459,8 @@ impl App {
                 .cloned()
                 .unwrap_or_else(|| v.sheet.display(pos.row, pos.col).into_owned()),
         };
-        v.grid.edit = Some(CellEdit {
-            pos,
-            text: typed.unwrap_or_else(|| original.clone()),
-            original,
-            focus: true,
-            in_bar: false,
-        });
+        let text = typed.unwrap_or_else(|| original.clone());
+        v.grid.edit = Some(CellEdit::new(pos, original, text));
     }
 
     /// Closes the editor and stores what was typed; `step` moves the cursor on.

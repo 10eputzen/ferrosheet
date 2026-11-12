@@ -5,7 +5,10 @@ use eframe::egui::{
     self, Align2, Color32, CursorIcon, FontId, Painter, Pos2, Rect, Response, ScrollArea, Sense,
     Stroke, UiBuilder, Vec2, pos2, vec2,
 };
-use ferrosheet_core::{CellPos, CellStyle, CellValue, Selection, Sheet, column_name};
+use ferrosheet_core::{
+    CellPos, CellStyle, CellValue, Selection, Sheet, column_name, find_refs, ref_slot, ref_text,
+    splice,
+};
 
 #[cfg(test)]
 use crate::rows::ROW_H;
@@ -42,6 +45,8 @@ pub struct GridState {
     /// Fit these columns or rows to their content on the next frame.
     pub fit: Option<Fit>,
     offset: Vec2,
+    /// Screen position of the top-left corner of A1 in the last frame.
+    origin: Pos2,
     resizing: Option<Resize>,
     /// Zoom the widths and heights are stored at (0 = not drawn yet, i.e. 100 %).
     zoom: f32,
@@ -64,6 +69,123 @@ pub struct CellEdit {
     pub focus: bool,
     /// Typing happens in the formula bar; the cell only mirrors the text.
     pub in_bar: bool,
+    /// Characters of the reference the last click on a cell wrote into the formula
+    /// (while pointing: the ones the reference being pointed at replaces).
+    pub point: Option<(usize, usize)>,
+    /// A click or drag on cells is writing a reference (point mode); where it started.
+    pub pointing: Option<CellPos>,
+}
+
+impl CellEdit {
+    pub fn new(pos: CellPos, original: String, text: String) -> Self {
+        CellEdit {
+            pos,
+            original,
+            text,
+            focus: true,
+            in_bar: false,
+            point: None,
+            pointing: None,
+        }
+    }
+
+    /// The text field typing happens in.
+    pub fn editor_id(&self) -> egui::Id {
+        if self.in_bar { bar_id() } else { edit_id() }
+    }
+
+    /// Where the reference of a clicked cell goes, if the cursor sits where one may.
+    fn point_slot(&self, ctx: &egui::Context) -> Option<(usize, usize)> {
+        let n = self.text.chars().count();
+        let sel = egui::text_edit::TextEditState::load(ctx, self.editor_id())
+            .and_then(|s| s.cursor.char_range())
+            .map_or((n, n), |r| {
+                let r = r.as_sorted_char_range();
+                (r.start.0.min(n), r.end.0.min(n))
+            });
+        ref_slot(&self.text, sel, self.point)
+    }
+
+    /// Writes the reference to `a`..`b` over the slot and puts the cursor behind it.
+    fn write_ref(&mut self, ctx: &egui::Context, a: CellPos, b: CellPos) {
+        let Some((start, end)) = self.point else {
+            return;
+        };
+        let end = splice(&mut self.text, start, end, &ref_text(a, b));
+        self.point = Some((start, end));
+        let id = self.editor_id();
+        let mut state = egui::text_edit::TextEditState::load(ctx, id).unwrap_or_default();
+        let cursor = egui::text::CCursor::new(end);
+        state
+            .cursor
+            .set_char_range(Some(egui::text::CCursorRange::one(cursor)));
+        state.store(ctx, id);
+    }
+}
+
+/// Colours of the references in a formula, in turn; readable on light and dark cells.
+pub fn ref_color(i: usize, dark: bool) -> Color32 {
+    const LIGHT: [[u8; 3]; 6] = [
+        [0, 90, 200],
+        [200, 30, 30],
+        [120, 60, 180],
+        [0, 130, 60],
+        [200, 90, 0],
+        [190, 0, 140],
+    ];
+    const DARK: [[u8; 3]; 6] = [
+        [110, 170, 255],
+        [255, 110, 100],
+        [190, 140, 255],
+        [100, 210, 120],
+        [255, 170, 80],
+        [255, 110, 210],
+    ];
+    let [r, g, b] = if dark { DARK } else { LIGHT }[i % 6];
+    Color32::from_rgb(r, g, b)
+}
+
+/// An editor's text with each reference of a formula in its colour.
+pub fn formula_job(text: &str, font: FontId, color: Color32, dark: bool) -> egui::text::LayoutJob {
+    let mut job = egui::text::LayoutJob::default();
+    let format = |color| egui::TextFormat {
+        font_id: font.clone(),
+        color,
+        ..Default::default()
+    };
+    let refs = if text.starts_with('=') {
+        find_refs(text)
+    } else {
+        Vec::new()
+    };
+    let byte: Vec<usize> = text
+        .char_indices()
+        .map(|(b, _)| b)
+        .chain([text.len()])
+        .collect();
+    let mut at = 0;
+    for r in refs {
+        if r.start > at {
+            job.append(&text[byte[at]..byte[r.start]], 0.0, format(color));
+        }
+        let color = ref_color(r.color, dark);
+        job.append(&text[byte[r.start]..byte[r.end]], 0.0, format(color));
+        at = r.end;
+    }
+    job.append(&text[byte[at]..], 0.0, format(color));
+    job
+}
+
+/// Text field layouter that colours the references of a formula.
+pub fn formula_layouter(
+    font: FontId,
+) -> impl FnMut(&egui::Ui, &dyn egui::TextBuffer, f32) -> std::sync::Arc<egui::Galley> {
+    move |ui, buf, wrap| {
+        let v = ui.visuals();
+        let mut job = formula_job(buf.as_str(), font.clone(), v.text_color(), v.dark_mode);
+        job.wrap.max_width = wrap;
+        ui.fonts_mut(|f| f.layout_job(job))
+    }
 }
 
 /// Id of the in-cell editor, so the app can take its focus away when it closes.
@@ -96,6 +218,15 @@ enum Resize {
 }
 
 impl GridState {
+    /// Centre of a cell on screen, as of the last frame (for UI tests).
+    #[cfg(test)]
+    pub fn cell_center(&self, cell: CellPos) -> Pos2 {
+        let x: f32 = self.col_widths[..cell.col as usize].iter().sum();
+        let w = self.col_widths[cell.col as usize];
+        let rh = &self.row_heights;
+        self.origin + vec2(x + w / 2.0, rh.top(cell.row) + rh.height(cell.row) / 2.0)
+    }
+
     pub fn visible_rows(&self) -> i64 {
         ((self.view.y / self.row_heights.base()) as i64 - 1).max(1)
     }
@@ -222,6 +353,7 @@ pub fn show(
             area.show_viewport(ui, |ui, vp| {
                 let (rect, resp) = ui.allocate_exact_size(total, Sense::click_and_drag());
                 let origin = rect.min;
+                st.origin = origin;
                 let painter = ui.painter_at(ui.clip_rect());
                 let (r0, r1) = visible_range(vp.min.y, vp.max.y, rows, rh);
                 let c0 = xs.partition_point(|&x| x <= vp.min.x).saturating_sub(1) as u32;
@@ -333,6 +465,31 @@ pub fn show(
                     );
                 }
 
+                // references of the formula being typed, framed in their colours
+                if let Some(e) = &st.edit
+                    && e.text.starts_with('=')
+                {
+                    let here = sheet.name.to_lowercase();
+                    for r in find_refs(&e.text) {
+                        let other = r.sheet.is_some_and(|s| s.to_lowercase() != here);
+                        if other || r.first.row >= rows || r.first.col >= cols {
+                            continue;
+                        }
+                        let rect = cell_rect(r.first.row, r.first.col).union(cell_rect(
+                            r.last.row.min(rows - 1),
+                            r.last.col.min(cols - 1),
+                        ));
+                        let color = ref_color(r.color, visuals.dark_mode);
+                        painter.rect_filled(rect, 0.0, color.gamma_multiply(0.12));
+                        painter.rect_stroke(
+                            rect,
+                            0.0,
+                            Stroke::new(2.0, color),
+                            egui::StrokeKind::Inside,
+                        );
+                    }
+                }
+
                 // in-cell editor
                 if let Some(e) = &mut st.edit
                     && e.pos.row < rows
@@ -344,13 +501,12 @@ pub fn show(
                         painter.rect_filled(rect, 0.0, pal.cell_bg);
                         let clipped =
                             painter.with_clip_rect(rect.shrink(1.0).intersect(painter.clip_rect()));
-                        clipped.text(
-                            rect.left_center() + vec2(PAD, 0.0),
-                            Align2::LEFT_CENTER,
-                            &e.text,
-                            font.clone(),
-                            pal.text,
-                        );
+                        let job = formula_job(&e.text, font.clone(), pal.text, visuals.dark_mode);
+                        let galley = clipped.layout_job(job);
+                        let at = Align2::LEFT_CENTER
+                            .anchor_size(rect.left_center() + vec2(PAD, 0.0), galley.size())
+                            .min;
+                        clipped.galley(at, galley, pal.text);
                     }
                     // A strong frame marks the cell being edited.
                     let frame = Stroke::new(2.5, visuals.selection.stroke.color);
@@ -362,13 +518,15 @@ pub fn show(
                     && e.pos.col < cols
                 {
                     let rect = cell_rect(e.pos.row, e.pos.col);
+                    let mut layouter = formula_layouter(font.clone());
                     let edit = ui.put(
                         rect,
                         egui::TextEdit::singleline(&mut e.text)
                             .id(edit_id())
                             .font(font.clone())
                             .margin(vec2(PAD - 1.0, 2.0))
-                            .desired_width(rect.width()),
+                            .desired_width(rect.width())
+                            .layouter(&mut layouter),
                     );
                     let address = column_name(e.pos.col) + &(e.pos.row + 1).to_string();
                     edit.widget_info(|| {
@@ -385,7 +543,7 @@ pub fn show(
                             .cursor
                             .set_char_range(Some(egui::text::CCursorRange::one(end)));
                         state.store(ui.ctx(), edit_id());
-                    } else if edit.lost_focus() {
+                    } else if edit.lost_focus() && e.pointing.is_none() {
                         grid_out.edit_left = true;
                     }
                 }
@@ -403,8 +561,38 @@ pub fn show(
                     }
                 }
 
+                // Point mode: while a formula is typed and the cursor sits where a
+                // reference may go, a click or drag on cells writes their reference
+                // into it instead of selecting them. The editor keeps the focus.
+                let mut pointed = false;
+                if !secondary && let Some(e) = &mut st.edit {
+                    let ctx = ui.ctx().clone();
+                    if e.pointing.is_none()
+                        && !shift
+                        && ui.input(|i| i.pointer.primary_pressed())
+                        && resp.is_pointer_button_down_on()
+                        && let Some(slot) = e.point_slot(&ctx)
+                        && let Some(p) = ui.input(|i| i.pointer.interact_pos())
+                    {
+                        e.point = Some(slot);
+                        e.pointing = Some(cell_at(p - origin, &xs, rh, rows, cols));
+                    }
+                    if let Some(anchor) = e.pointing {
+                        pointed = true;
+                        if let Some(p) = ui.input(|i| i.pointer.interact_pos()) {
+                            let cell = cell_at(p - origin, &xs, rh, rows, cols);
+                            e.write_ref(&ctx, anchor, cell);
+                        }
+                        if !ui.input(|i| i.pointer.primary_down()) {
+                            e.pointing = None;
+                            ctx.memory_mut(|m| m.request_focus(e.editor_id()));
+                        }
+                    }
+                }
+
                 // mouse selection
-                if !secondary
+                if !pointed
+                    && !secondary
                     && resp.is_pointer_button_down_on()
                     && let Some(p) = ui.input(|i| i.pointer.interact_pos())
                 {

@@ -823,33 +823,38 @@ impl App {
                     let name = egui::RichText::new(cell_address(cur.row, cur.col)).monospace();
                     let address = ui.add_sized([56.0, 20.0], egui::Label::new(name));
                     ui.weak(text::formula_label());
-                    let bar = |text| {
-                        egui::TextEdit::singleline(text)
-                            .id(grid::bar_id())
-                            .desired_width(f32::INFINITY)
-                    };
-                    match &mut v.grid.edit {
-                        // Editing: the bar edits the same text as the cell.
-                        Some(e) => {
-                            let resp = ui.add(bar(&mut e.text)).labelled_by(address.id);
-                            if resp.has_focus() {
-                                e.in_bar = true;
-                            } else if e.in_bar && resp.lost_focus() {
-                                leave_bar = true;
-                            }
-                        }
-                        // Not editing: clicking into the bar starts editing there.
+                    let font = egui::TextStyle::Body.resolve(ui.style());
+                    let mut layouter = grid::formula_layouter(font);
+                    // Editing: the bar edits the same text as the cell. Not editing: it
+                    // shows the content, and clicking into it starts editing there.
+                    let mut content;
+                    let text = match &mut v.grid.edit {
+                        Some(e) => &mut e.text,
                         None => {
-                            let mut content = v
+                            content = v
                                 .formulas
                                 .get(&(cur.row, cur.col))
                                 .cloned()
                                 .unwrap_or_else(|| v.sheet.display(cur.row, cur.col).into_owned());
-                            let resp = ui
-                                .add(bar(&mut content))
-                                .labelled_by(address.id)
-                                .on_hover_text(text::formula_bar_hint());
-                            if resp.gained_focus() {
+                            &mut content
+                        }
+                    };
+                    let bar = egui::TextEdit::singleline(text)
+                        .id(grid::bar_id())
+                        .desired_width(f32::INFINITY)
+                        .layouter(&mut layouter);
+                    let resp = ui.add(bar).labelled_by(address.id);
+                    match &mut v.grid.edit {
+                        // A click on a cell while pointing takes the focus only briefly.
+                        Some(e) => {
+                            if resp.has_focus() {
+                                e.in_bar = true;
+                            } else if e.in_bar && resp.lost_focus() && e.pointing.is_none() {
+                                leave_bar = true;
+                            }
+                        }
+                        None => {
+                            if resp.on_hover_text(text::formula_bar_hint()).gained_focus() {
                                 start_in_bar = true;
                             }
                         }
@@ -2025,5 +2030,135 @@ mod tests {
         assert!(h.state_mut().active_view().unwrap().grid.edit.is_none());
         h.get_by_label(text::edit_failed());
         assert!(h.state().error.as_deref().unwrap().contains("broken"));
+    }
+
+    // ---- point mode ----------------------------------------------------------
+
+    fn at(h: &mut Harness<'_, App>, r: u32, c: u32) -> eframe::egui::Pos2 {
+        h.state_mut()
+            .active_view()
+            .unwrap()
+            .grid
+            .cell_center(CellPos::new(r, c))
+    }
+
+    fn click_cell(h: &mut Harness<'_, App>, r: u32, c: u32) {
+        let p = at(h, r, c);
+        h.hover_at(p);
+        h.run();
+        for pressed in [true, false] {
+            h.event(Event::PointerButton {
+                pos: p,
+                button: eframe::egui::PointerButton::Primary,
+                pressed,
+                modifiers: Modifiers::NONE,
+            });
+            // A commit starts the edit engine and its spinner: step, do not run.
+            h.step();
+        }
+        h.step();
+    }
+
+    fn drag_cells(h: &mut Harness<'_, App>, from: (u32, u32), to: (u32, u32)) {
+        let (a, b) = (at(h, from.0, from.1), at(h, to.0, to.1));
+        h.hover_at(a);
+        h.run();
+        h.drag_at(a);
+        h.run();
+        for i in 1..=5 {
+            h.hover_at(a + (b - a) * (i as f32 / 5.0));
+            h.run();
+        }
+        h.drop_at(b);
+        h.run();
+    }
+
+    fn edit_text(h: &mut Harness<'_, App>) -> Option<String> {
+        h.state_mut()
+            .active_view()
+            .unwrap()
+            .grid
+            .edit
+            .as_ref()
+            .map(|e| e.text.clone())
+    }
+
+    fn number(h: &mut Harness<'_, App>, r: u32, c: u32) -> f64 {
+        match value(h, r, c) {
+            CellValue::Number(n) => n,
+            v => panic!("({r}, {c}) is {v:?}"),
+        }
+    }
+
+    #[test]
+    fn clicking_and_dragging_cells_writes_references_into_a_formula() {
+        let mut h = open(demo());
+        let expected = number(&mut h, 1, 1)
+            + (2..=4)
+                .flat_map(|r| [(r, 2), (r, 3)])
+                .map(|(r, c)| number(&mut h, r, c))
+                .sum::<f64>();
+        select(&mut h, 12, 1);
+        h.event(Event::Text("=".into()));
+        h.run();
+        h.run();
+        click_cell(&mut h, 1, 1);
+        assert_eq!(edit_text(&mut h).as_deref(), Some("=B2"));
+        assert!(h.ctx.memory(|m| m.has_focus(grid::edit_id())));
+        // a second click replaces the reference just written
+        click_cell(&mut h, 1, 0);
+        click_cell(&mut h, 1, 1);
+        assert_eq!(edit_text(&mut h).as_deref(), Some("=B2"));
+
+        h.event(Event::Text("+SUM(".into()));
+        h.run();
+        drag_cells(&mut h, (2, 2), (4, 3));
+        assert_eq!(edit_text(&mut h).as_deref(), Some("=B2+SUM(C3:D5"));
+        assert_eq!(cursor(&mut h), CellPos::new(12, 1));
+        h.event(Event::Text(")".into()));
+        h.run();
+
+        h.key_press(Key::Enter);
+        settle(&mut h, |app| {
+            matches!(
+                app.active_view().unwrap().sheet.value(12, 1),
+                CellValue::Number(_)
+            )
+        });
+        let got = number(&mut h, 12, 1);
+        assert!((got - expected).abs() < 1e-9, "{got} != {expected}");
+        assert!(h.state_mut().active_view().unwrap().grid.edit.is_none());
+    }
+
+    #[test]
+    fn point_mode_works_from_the_formula_bar() {
+        let mut h = open(demo());
+        let b2 = number(&mut h, 1, 1);
+        select(&mut h, 12, 1);
+        h.get_by_role_and_label(Role::TextInput, "B13").click();
+        h.run();
+        h.event(Event::Text("=SUM(".into()));
+        h.run();
+        click_cell(&mut h, 1, 1);
+        assert_eq!(edit_text(&mut h).as_deref(), Some("=SUM(B2"));
+        assert!(h.ctx.memory(|m| m.has_focus(grid::bar_id())));
+        h.event(Event::Text(")".into()));
+        h.run();
+        h.key_press(Key::Enter);
+        settle(&mut h, |app| {
+            app.active_view().unwrap().sheet.value(12, 1) == &CellValue::Number(b2)
+        });
+    }
+
+    #[test]
+    fn outside_point_mode_a_click_on_a_cell_commits() {
+        let mut h = open(demo());
+        select(&mut h, 12, 1);
+        h.event(Event::Text("=SU".into()));
+        h.run();
+        h.run();
+        click_cell(&mut h, 1, 1);
+        assert!(h.state_mut().active_view().unwrap().grid.edit.is_none());
+        assert_eq!(cursor(&mut h), CellPos::new(1, 1));
     }
 }

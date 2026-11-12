@@ -27,6 +27,9 @@ question was: why not port that small piece to Rust?
   Excel, Google Sheets or an email
 - Edit cells and formulas with recalculation ([IronCalc](https://github.com/ironcalc/IronCalc)),
   undo and redo, bold, italic, text and fill colour, number formats
+- Build formulas by pointing: after `=`, an operator or `(`, click a cell or drag over a
+  range to insert its reference; each reference gets its own colour in the formula and
+  a matching frame in the grid
 - Save xlsx and csv in place (csv keeps its delimiter, encoding and decimal separator);
   xls, xlsb and ods are saved as a new `.xlsx`. Values and formulas are kept; fonts,
   borders and other formatting from the file may be lost
