@@ -162,7 +162,11 @@ fn cmd(program: &str) -> Command {
 fn cmd(program: &str) -> Command {
     use std::os::windows::process::CommandExt;
     let root = std::env::var_os("SystemRoot").unwrap_or_else(|| r"C:\Windows".into());
-    let mut c = Command::new(Path::new(&root).join("System32").join(format!("{program}.exe")));
+    let mut c = Command::new(
+        Path::new(&root)
+            .join("System32")
+            .join(format!("{program}.exe")),
+    );
     c.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
     c
 }
