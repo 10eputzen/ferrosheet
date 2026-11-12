@@ -12,6 +12,8 @@ calamine = { version = "0.38", features = ["dates"] }
 chrono = { version = "0.4", default-features = false, features = ["std"] }
 csv = "1"
 regex = "1"
+# Formula engine for editing; only used once the user edits a cell.
+ironcalc = "0.9.1"
 
 [dev-dependencies]
 rust_xlsxwriter = "0.102"

@@ -7,7 +7,37 @@
 //! currency, and digit strings with a leading zero or more than 15 digits (postcodes,
 //! IDs, phone and account numbers), which Excel is known to mangle.
 
-use crate::CellValue;
+use crate::{CellValue, Locale, Sheet};
+
+/// How a text file was encoded, so saving writes it back the same way.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Encoding {
+    Utf8,
+    Utf8Bom,
+    Utf16Le,
+    Utf16Be,
+    Windows1252,
+}
+
+/// Everything needed to write a text file back as it was read.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TextFormat {
+    pub delimiter: u8,
+    pub decimal_comma: bool,
+    pub encoding: Encoding,
+}
+
+impl TextFormat {
+    /// Detects the format of a decoded file.
+    pub fn detect(text: &str, encoding: Encoding) -> TextFormat {
+        let delimiter = sniff_delimiter(text);
+        TextFormat {
+            delimiter,
+            decimal_comma: decimal_comma(text, delimiter),
+            encoding,
+        }
+    }
+}
 
 /// A parsed file: row-major cells, padded to the widest row.
 pub struct Table {
@@ -16,20 +46,77 @@ pub struct Table {
     pub cells: Vec<CellValue>,
 }
 
-/// Turns the raw file into text.
-pub fn decode(bytes: Vec<u8>) -> String {
+/// Turns the raw file into text and says which encoding it was.
+pub fn decode(bytes: Vec<u8>) -> (String, Encoding) {
     if let Some(rest) = bytes.strip_prefix(b"\xEF\xBB\xBF") {
-        return String::from_utf8_lossy(rest).into_owned();
+        return (
+            String::from_utf8_lossy(rest).into_owned(),
+            Encoding::Utf8Bom,
+        );
     }
     if let Some(rest) = bytes.strip_prefix(b"\xFF\xFE") {
-        return utf16(rest, u16::from_le_bytes);
+        return (utf16(rest, u16::from_le_bytes), Encoding::Utf16Le);
     }
     if let Some(rest) = bytes.strip_prefix(b"\xFE\xFF") {
-        return utf16(rest, u16::from_be_bytes);
+        return (utf16(rest, u16::from_be_bytes), Encoding::Utf16Be);
     }
     match String::from_utf8(bytes) {
-        Ok(s) => s,
-        Err(e) => windows_1252(e.as_bytes()),
+        Ok(s) => (s, Encoding::Utf8),
+        Err(e) => (windows_1252(e.as_bytes()), Encoding::Windows1252),
+    }
+}
+
+/// Writes a sheet as delimited text in `format`. Numbers use the file's decimal
+/// separator without grouping; everything else is written as displayed.
+pub fn write(sheet: &Sheet, format: TextFormat) -> Result<Vec<u8>, String> {
+    let mut w = ::csv::WriterBuilder::new()
+        .delimiter(format.delimiter)
+        .terminator(::csv::Terminator::CRLF)
+        .from_writer(Vec::new());
+    for r in 0..sheet.rows {
+        let row = (0..sheet.cols).map(|c| match sheet.value(r, c) {
+            CellValue::Number(n) => {
+                let s = CellValue::Number(*n).format(Locale::Invariant);
+                if format.decimal_comma {
+                    s.replace('.', ",")
+                } else {
+                    s
+                }
+            }
+            CellValue::Text(t) => t.to_string(),
+            _ => sheet.display(r, c).into_owned(),
+        });
+        w.write_record(row).map_err(|e| e.to_string())?;
+    }
+    let text =
+        String::from_utf8(w.into_inner().map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
+    Ok(encode(&text, format.encoding))
+}
+
+fn encode(text: &str, encoding: Encoding) -> Vec<u8> {
+    match encoding {
+        Encoding::Utf8 => text.as_bytes().to_vec(),
+        Encoding::Utf8Bom => [b"\xEF\xBB\xBF".as_slice(), text.as_bytes()].concat(),
+        Encoding::Utf16Le => [0xFF, 0xFE]
+            .into_iter()
+            .chain(text.encode_utf16().flat_map(u16::to_le_bytes))
+            .collect(),
+        Encoding::Utf16Be => [0xFE, 0xFF]
+            .into_iter()
+            .chain(text.encode_utf16().flat_map(u16::to_be_bytes))
+            .collect(),
+        Encoding::Windows1252 => text.chars().map(to_windows_1252).collect(),
+    }
+}
+
+/// `?` for characters Windows-1252 cannot hold.
+fn to_windows_1252(ch: char) -> u8 {
+    match u32::from(ch) {
+        n @ (0..=0x7F | 0xA0..=0xFF) => n as u8,
+        _ => WINDOWS_1252_HIGH
+            .iter()
+            .position(|&h| h == ch)
+            .map_or(b'?', |i| 0x80 + i as u8),
     }
 }
 
@@ -41,23 +128,23 @@ fn utf16(bytes: &[u8], word: fn([u8; 2]) -> u16) -> String {
 }
 
 /// Windows-1252: Latin-1 plus typographic characters in 0x80–0x9F.
+const WINDOWS_1252_HIGH: [char; 32] = [
+    '€', '\u{81}', '‚', 'ƒ', '„', '…', '†', '‡', 'ˆ', '‰', 'Š', '‹', 'Œ', '\u{8D}', 'Ž', '\u{8F}',
+    '\u{90}', '‘', '’', '“', '”', '•', '–', '—', '˜', '™', 'š', '›', 'œ', '\u{9D}', 'ž', 'Ÿ',
+];
+
 fn windows_1252(bytes: &[u8]) -> String {
-    const HIGH: [char; 32] = [
-        '€', '\u{81}', '‚', 'ƒ', '„', '…', '†', '‡', 'ˆ', '‰', 'Š', '‹', 'Œ', '\u{8D}', 'Ž',
-        '\u{8F}', '\u{90}', '‘', '’', '“', '”', '•', '–', '—', '˜', '™', 'š', '›', 'œ', '\u{9D}',
-        'ž', 'Ÿ',
-    ];
     bytes
         .iter()
         .map(|&b| match b {
-            0x80..=0x9F => HIGH[usize::from(b - 0x80)],
+            0x80..=0x9F => WINDOWS_1252_HIGH[usize::from(b - 0x80)],
             _ => char::from(b),
         })
         .collect()
 }
 
 /// The delimiter that splits the first lines most evenly, `,` if none does.
-pub fn sniff_delimiter(text: &str) -> u8 {
+fn sniff_delimiter(text: &str) -> u8 {
     let lines: Vec<&str> = text.lines().filter(|l| !l.is_empty()).take(30).collect();
     let mut best = (b',', 0u64);
     for d in *b";,\t|" {
@@ -254,9 +341,9 @@ mod tests {
 
     #[test]
     fn encodings() {
-        assert_eq!(decode(b"\xEF\xBB\xBFa;\xC3\xA4".to_vec()), "a;ä");
-        assert_eq!(decode(b"Gr\xF6\xDFe \x80".to_vec()), "Größe €");
-        assert_eq!(decode(b"\xFF\xFEa\0\xE4\0".to_vec()), "aä");
+        assert_eq!(decode(b"\xEF\xBB\xBFa;\xC3\xA4".to_vec()).0, "a;ä");
+        assert_eq!(decode(b"Gr\xF6\xDFe \x80".to_vec()).0, "Größe €");
+        assert_eq!(decode(b"\xFF\xFEa\0\xE4\0".to_vec()).0, "aä");
     }
 
     #[test]
@@ -265,5 +352,27 @@ mod tests {
         assert_eq!(sniff_delimiter("a,b,c\n1,2,3\n"), b',');
         assert_eq!(sniff_delimiter("a\tb\n\"x;y\"\t2\n"), b'\t');
         assert_eq!(sniff_delimiter("one column\n"), b',');
+    }
+
+    #[test]
+    fn writes_back_in_the_format_it_was_read() {
+        let cases = [
+            (
+                b"Name;Betrag;PLZ\r\nM\xFCller;2,5;01234\r\n\x80;1000;x\r\n".to_vec(),
+                Encoding::Windows1252,
+            ),
+            (
+                b"\xEF\xBB\xBFa,b\r\n\"x,y\",1.5\r\n".to_vec(),
+                Encoding::Utf8Bom,
+            ),
+        ];
+        for (bytes, enc) in cases {
+            let (text, found) = decode(bytes.clone());
+            assert_eq!(found, enc);
+            let format = TextFormat::detect(&text, found);
+            let t = parse(&text).unwrap();
+            let sheet = Sheet::from_cells("t".into(), t.rows, t.cols, t.cells, Locale::Invariant);
+            assert_eq!(write(&sheet, format).unwrap(), bytes);
+        }
     }
 }

@@ -12,6 +12,7 @@ use calamine::{CellErrorType, Data, ExcelDateTime, Reader, Sheets, open_workbook
 pub const PREVIEW_ROWS: u32 = 200;
 use chrono::NaiveDate;
 
+use crate::csv::TextFormat;
 use crate::{CellError, CellValue, Locale, Sheet};
 
 /// File extensions ferrosheet can open.
@@ -61,7 +62,7 @@ pub struct Workbook {
 enum Inner {
     Calamine(Sheets<BufReader<File>>),
     /// Delimited text: one sheet, parsed when it is loaded.
-    Text(String),
+    Text(String, TextFormat),
 }
 
 fn is_text_file(path: &Path) -> bool {
@@ -79,13 +80,14 @@ impl Workbook {
             )));
         }
         if is_text_file(path) {
-            let text = crate::csv::decode(std::fs::read(path).map_err(LoadError::Io)?);
+            let (text, encoding) = crate::csv::decode(std::fs::read(path).map_err(LoadError::Io)?);
+            let format = TextFormat::detect(&text, encoding);
             let name = path.file_stem().unwrap_or_default().to_string_lossy();
             return Ok(Workbook {
                 path: path.to_path_buf(),
                 sheet_names: vec![name.into_owned()],
                 locale,
-                inner: Inner::Text(text),
+                inner: Inner::Text(text, format),
             });
         }
         let inner = guard(|| Ok(open_workbook_auto(path)?))?;
@@ -97,12 +99,20 @@ impl Workbook {
         })
     }
 
+    /// How a `.csv`/`.tsv` file is written, `None` for spreadsheet formats.
+    pub fn text_format(&self) -> Option<TextFormat> {
+        match self.inner {
+            Inner::Text(_, f) => Some(f),
+            Inner::Calamine(_) => None,
+        }
+    }
+
     /// Reads sheet `idx` and converts it into a display-ready [`Sheet`].
     pub fn load_sheet(&mut self, idx: usize) -> Result<Sheet, LoadError> {
         let name = self.sheet_name(idx)?;
         let inner = match &mut self.inner {
             Inner::Calamine(inner) => inner,
-            Inner::Text(text) => {
+            Inner::Text(text, _) => {
                 let t = crate::csv::parse(text).map_err(LoadError::Format)?;
                 return Ok(Sheet::from_cells(
                     name,

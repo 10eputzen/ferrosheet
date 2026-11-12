@@ -20,6 +20,15 @@ lto = "thin"
 # Unwind, not abort: a panic inside the file parser is caught and shown as an error.
 strip = true
 
+# The formula engine is about 4 MB of code. Optimising it for size saves ~0.6 MB and only
+# slows the first edit of a big file.
+[profile.release.package.ironcalc]
+opt-level = "s"
+[profile.release.package.ironcalc_base]
+opt-level = "s"
+[profile.release.package.statrs]
+opt-level = "s"
+
 # Fast iteration but quick enough to judge scrolling in debug builds
 [profile.dev.package."*"]
 opt-level = 2
