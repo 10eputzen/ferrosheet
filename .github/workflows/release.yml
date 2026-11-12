@@ -27,7 +27,7 @@ jobs:
       - uses: actions/checkout@v4
       - name: Linux build dependencies
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libxkbcommon-dev libgl1-mesa-dev libwayland-dev libx11-dev libxcursor-dev libxrandr-dev libxi-dev xvfb
+        run: sudo apt-get update && sudo apt-get install -y libxkbcommon-dev libgl1-mesa-dev libwayland-dev libx11-dev libxcursor-dev libxrandr-dev libxi-dev xvfb libxkbcommon-x11-0
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - run: cargo build --release -p ferrosheet
 
@@ -45,6 +45,11 @@ jobs:
           cp target/release/ferrosheet.exe dist/${{ matrix.name }}/
           cd dist && 7z a ../${{ matrix.name }}.zip ${{ matrix.name }}
 
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.name }}
+          path: ${{ matrix.name }}.*
+
       # Smoke test: start the Linux build on a virtual display and save a screenshot.
       - name: Screenshot (Linux)
         if: runner.os == 'Linux'
@@ -59,10 +64,6 @@ jobs:
           name: screenshot-linux
           path: screenshot-linux.png
 
-      - uses: actions/upload-artifact@v4
-        with:
-          name: ${{ matrix.name }}
-          path: ${{ matrix.name }}.*
 
   publish:
     if: startsWith(github.ref, 'refs/tags/v')
