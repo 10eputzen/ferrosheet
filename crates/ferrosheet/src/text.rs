@@ -65,6 +65,10 @@ texts! {
     empty_sheet: "Dieses Blatt ist leer.", "This sheet is empty.";
     search: "Suchen", "Search";
     all_sheets: "Alle Blätter", "All sheets";
+    regex: "Regex", "Regex";
+    regex_hint: "Suchtext als regulären Ausdruck lesen, z. B. ^M(ü|ei)er$",
+        "Treat the search as a regular expression, e.g. ^M(ue|ei)er$";
+    invalid_regex: "Ungültiger Ausdruck", "Invalid expression";
     no_hits: "Keine Treffer", "No matches";
     search_enter: "Enter drücken zum Suchen", "Press Enter to search";
     prev_hit: "Vorheriger Treffer (Umschalt+F3)", "Previous match (Shift+F3)";

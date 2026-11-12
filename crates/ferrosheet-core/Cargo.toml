@@ -11,6 +11,7 @@ authors.workspace = true
 calamine = { version = "0.38", features = ["dates"] }
 chrono = { version = "0.4", default-features = false, features = ["std"] }
 csv = "1"
+regex = "1"
 
 [dev-dependencies]
 rust_xlsxwriter = "0.102"

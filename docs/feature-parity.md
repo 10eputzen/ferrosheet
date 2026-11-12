@@ -14,7 +14,8 @@ so nobody expects an office suite. ✅ done · 🟡 planned · ❌ out of scope
 | Formulas: show the formula of a cell | ✅ | ✅ (formula bar) |
 | Formulas: recalculate | ✅ | 🟡 phase 2 via IronCalc; phase 1 shows the results stored in the file |
 | Search, case-insensitive, current or all sheets | ✅ | ✅ |
-| Search with regex, replace | ✅ | ❌ / 🟡 replace with phase 2 |
+| Search with regex | ✅ | ✅ toggle next to "All sheets", invalid pattern shows a hint |
+| Replace | ✅ | 🟡 phase 2 |
 | Select cells, rows, columns, all | ✅ | ✅ |
 | Copy as tab-separated text (pastes into Excel, Sheets, mail) | ✅ | ✅ plus raw values with Ctrl+Shift+C |
 | Column width: drag, double-click autofit | ✅ | ✅ |

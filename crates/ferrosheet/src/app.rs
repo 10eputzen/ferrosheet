@@ -7,7 +7,7 @@ use std::sync::mpsc::{Receiver, TryRecvError};
 
 use eframe::egui::{self, Event, Key, Modifiers, ViewportCommand};
 use ferrosheet_core::{
-    CellPos, CopyFormat, EXTENSIONS, Selection, Sheet, cell_address, copy_text, find_all,
+    CellPos, CopyFormat, EXTENSIONS, Query, Selection, Sheet, cell_address, copy_text, find_all,
 };
 
 use crate::grid::{self, GridState};
@@ -39,6 +39,10 @@ struct Search {
     focus: bool,
     query: String,
     all_sheets: bool,
+    /// The query is a regular expression.
+    regex: bool,
+    /// Why the regular expression is invalid.
+    error: Option<String>,
     /// Sorted by (sheet, row, col).
     hits: Vec<(usize, CellPos)>,
     current: Option<usize>,
@@ -229,17 +233,29 @@ impl App {
         s.dirty = false;
         s.hits.clear();
         s.current = None;
+        s.error = None;
         let Some(doc) = &self.doc else { return };
         if s.query.is_empty() {
             return;
         }
+        let query = if s.regex {
+            match Query::regex(&s.query) {
+                Ok(q) => q,
+                Err(e) => {
+                    s.error = Some(e);
+                    return;
+                }
+            }
+        } else {
+            Query::text(&s.query)
+        };
         for (idx, view) in doc.sheets.iter().enumerate() {
             if !s.all_sheets && idx != doc.active {
                 continue;
             }
             if let Some(v) = view {
                 s.hits
-                    .extend(find_all(&v.sheet, &s.query).into_iter().map(|p| (idx, p)));
+                    .extend(find_all(&v.sheet, &query).into_iter().map(|p| (idx, p)));
             }
         }
         // start at the first hit at or after the cursor
@@ -317,6 +333,13 @@ impl App {
                         .for_each(|i| doc.loader.request_sheet(i));
                 }
             }
+            if ui
+                .checkbox(&mut self.search.regex, text::regex())
+                .on_hover_text(text::regex_hint())
+                .changed()
+            {
+                self.search.dirty = true;
+            }
             if self.search.dirty && (!large || enter) {
                 self.run_search();
                 self.reveal_current();
@@ -334,7 +357,15 @@ impl App {
                 (Some(c), n) => text::hit_counter(c + 1, n),
                 (None, n) => text::hit_counter(0, n),
             };
-            ui.weak(label);
+            match &self.search.error {
+                Some(e) if !self.search.dirty => {
+                    ui.colored_label(ui.visuals().error_fg_color, text::invalid_regex())
+                        .on_hover_text(e);
+                }
+                _ => {
+                    ui.weak(label);
+                }
+            }
             if ui
                 .small_button("<")
                 .on_hover_text(text::prev_hit())
@@ -835,6 +866,28 @@ mod tests {
         h.key_press_modifiers(Modifiers::SHIFT, Key::F3);
         h.run();
         assert_eq!(cursor(&mut h), first);
+    }
+
+    #[test]
+    fn regex_search_finds_patterns_and_an_invalid_one_shows_a_hint() {
+        let mut h = open(demo());
+        h.key_press_modifiers(Modifiers::COMMAND, Key::F);
+        h.run();
+        h.get_by_label(text::regex()).click();
+        h.run();
+        assert!(h.state().search.regex);
+        h.state_mut().search.focus = true;
+        h.run();
+        h.event(Event::Text("^pow.r".into()));
+        h.run();
+        assert_eq!(h.state().search.hits.len(), 1);
+        assert_eq!(cursor(&mut h), CellPos::new(3, 0));
+
+        h.event(Event::Text("(".into()));
+        h.run();
+        assert!(h.state().search.hits.is_empty());
+        assert!(h.state().search.error.is_some());
+        h.get_by_label(text::invalid_regex());
     }
 
     #[test]

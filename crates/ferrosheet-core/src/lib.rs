@@ -8,7 +8,7 @@ mod sheet;
 mod value;
 mod workbook;
 
-pub use search::find_all;
+pub use search::{Query, find_all};
 pub use selection::{CellPos, CopyFormat, Selection, copy_text};
 pub use sheet::Sheet;
 pub use value::{CellError, CellValue, Locale};

@@ -24,10 +24,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let format = t.elapsed();
     std::hint::black_box(n);
     let t = Instant::now();
-    let hits = ferrosheet_core::find_all(&sheet, "abc");
+    let hits = ferrosheet_core::find_all(&sheet, &ferrosheet_core::Query::text("abc"));
     let first_search = t.elapsed();
     let t = Instant::now();
-    ferrosheet_core::find_all(&sheet, "kunde 42");
+    ferrosheet_core::find_all(&sheet, &ferrosheet_core::Query::text("kunde 42"));
     let next_search = t.elapsed();
     println!("{} x {} cells", sheet.rows, sheet.cols);
     println!("open        {:>7.1} ms", open.as_secs_f64() * 1e3);
