@@ -1,0 +1,15 @@
+[package]
+name = "ferrosheet-core"
+description = "Spreadsheet loading, formatting, selection and search for ferrosheet"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+calamine = { version = "0.38", features = ["dates"] }
+chrono = { version = "0.4", default-features = false, features = ["std"] }
+
+[dev-dependencies]
+rust_xlsxwriter = "0.102"

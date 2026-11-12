@@ -1,0 +1,11 @@
+[package]
+name = "ferrosheet"
+description = "Fast, lightweight spreadsheet viewer (xls, xlsx, xlsb, ods)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+ferrosheet-core.workspace = true
