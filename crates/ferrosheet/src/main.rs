@@ -4,6 +4,7 @@
 mod app;
 mod grid;
 mod loader;
+mod recent;
 #[cfg(windows)]
 mod register;
 mod rows;

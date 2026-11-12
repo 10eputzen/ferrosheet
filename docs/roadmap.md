@@ -58,10 +58,9 @@ Done in 0.2: edit cells and formulas (IronCalc recalculation, built on the first
 undo/redo, bold, italic, text and fill colour, number formats. Save xlsx and csv in place,
 other formats as a new `.xlsx`. Values and formulas are kept; other formatting from the file
 may be lost.
+Done in 0.3: office-style layout (menu bar File/Edit/View/Format, toolbar, formula bar below
+it that edits the formula, not its result), right-click menus on cells and headers, sheet tabs
+with new/rename/delete (undoable), grid zoom 50–300 %, recent files in *File → Recent* and on
+the start screen.
 Still open: paste, insert/delete rows and columns, replace, printing/PDF. See
 [feature parity](feature-parity.md).
-
-## Wishlist (collected, not scheduled)
-
-- **Recent files:** list of recently opened files, like Excel's start page or *File → Recent*.
-  Shown on the empty start screen and in a menu; click opens the file, missing files are greyed out.

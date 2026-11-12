@@ -32,7 +32,9 @@ Spreadsheet functions (SUM, VLOOKUP, …) have their own list: [function parity]
 | Merged cells | ✅ | ❌ |
 | Freeze panes, hidden rows and columns | ✅ | ❌ |
 | Column width and row height: drag, double-click autofit | ✅ | ✅ |
-| Zoom | ✅ | ❌ |
+| Zoom | ✅ | ✅ grid only, 50–300 %, Ctrl+Plus/Minus/0 or Ctrl+wheel |
+| Add, rename, delete sheets | ✅ | ✅ "+" tab, double-click or right-click a tab |
+| Recent files | ✅ | ✅ *File → Recent* and the start screen |
 | Split window, several windows on one file | ✅ | ❌ |
 | Light and dark mode | ✅ | ✅ |
 | Interface language | many | German, English |

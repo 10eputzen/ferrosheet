@@ -2,14 +2,20 @@
 //! Only the visible cells are painted, so scrolling cost is independent of sheet size.
 
 use eframe::egui::{
-    self, Align2, Color32, CursorIcon, FontId, Painter, Pos2, Rect, ScrollArea, Sense, Stroke,
-    UiBuilder, Vec2, pos2, vec2,
+    self, Align2, Color32, CursorIcon, FontId, Painter, Pos2, Rect, Response, ScrollArea, Sense,
+    Stroke, UiBuilder, Vec2, pos2, vec2,
 };
 use ferrosheet_core::{CellPos, CellStyle, CellValue, Selection, Sheet, column_name};
 
-use crate::rows::{ROW_H, RowHeights};
+#[cfg(test)]
+use crate::rows::ROW_H;
+use crate::rows::RowHeights;
+
+pub const MIN_ZOOM: f32 = 0.5;
+pub const MAX_ZOOM: f32 = 3.0;
 
 const HEADER_H: f32 = 22.0;
+const FONT_SIZE: f32 = 13.0;
 const DEFAULT_W: f32 = 100.0;
 const MIN_W: f32 = 20.0;
 const MAX_AUTOFIT_W: f32 = 600.0;
@@ -33,8 +39,19 @@ pub struct GridState {
     pub row_heights: RowHeights,
     /// The open cell editor.
     pub edit: Option<CellEdit>,
+    /// Fit these columns or rows to their content on the next frame.
+    pub fit: Option<Fit>,
     offset: Vec2,
     resizing: Option<Resize>,
+    /// Zoom the widths and heights are stored at (0 = not drawn yet, i.e. 100 %).
+    zoom: f32,
+}
+
+/// Columns or rows (first, last) to fit to their content.
+#[derive(Clone, Copy, Debug)]
+pub enum Fit {
+    Cols(u32, u32),
+    Rows(u32, u32),
 }
 
 /// A cell being edited in place.
@@ -65,6 +82,10 @@ pub struct GridOut {
     pub double_clicked: bool,
     /// The editor lost focus without Enter, Tab or Esc (a click elsewhere).
     pub edit_left: bool,
+    /// The cell area and the header strips, for their right-click menus.
+    pub body: Option<Response>,
+    pub col_hdr: Option<Response>,
+    pub row_hdr: Option<Response>,
 }
 
 /// Header edge being dragged.
@@ -76,7 +97,20 @@ enum Resize {
 
 impl GridState {
     pub fn visible_rows(&self) -> i64 {
-        ((self.view.y / ROW_H) as i64 - 1).max(1)
+        ((self.view.y / self.row_heights.base()) as i64 - 1).max(1)
+    }
+
+    /// Stores widths and heights for `zoom` (1.0 = 100 %).
+    fn apply_zoom(&mut self, zoom: f32) {
+        let old = if self.zoom > 0.0 { self.zoom } else { 1.0 };
+        if (old - zoom).abs() > f32::EPSILON {
+            let f = zoom / old;
+            self.col_widths.iter_mut().for_each(|w| *w *= f);
+            self.row_heights.rescale(f);
+            self.offset *= f;
+            self.scroll_to = self.scroll_to.or(Some(self.selection.cursor));
+        }
+        self.zoom = zoom;
     }
 }
 
@@ -132,17 +166,38 @@ pub fn show(
     st: &mut GridState,
     hits: &[CellPos],
     current_hit: Option<CellPos>,
+    zoom: f32,
 ) -> GridOut {
     let mut grid_out = GridOut::default();
+    st.apply_zoom(zoom);
+    let header_h = HEADER_H * zoom;
+    let default_w = DEFAULT_W * zoom;
     let full = ui.available_rect_before_wrap();
-    let row_hdr_w = (digits(sheet.rows.max(1000)) as f32 * 8.0 + 2.0 * PAD).max(40.0);
-    let body = Rect::from_min_max(full.min + vec2(row_hdr_w, HEADER_H), full.max);
+    let row_hdr_w = (digits(sheet.rows.max(1000)) as f32 * 8.0 * zoom + 2.0 * PAD).max(40.0);
+    let body = Rect::from_min_max(full.min + vec2(row_hdr_w, header_h), full.max);
 
     // Virtual grid fills the window even for small sheets, like a real spreadsheet.
-    let rows = sheet.rows.max((body.height() / ROW_H) as u32 + 1);
-    let cols = sheet.cols.max((body.width() / DEFAULT_W) as u32 + 1);
+    let rows = sheet
+        .rows
+        .max((body.height() / st.row_heights.base()) as u32 + 1);
+    let cols = sheet.cols.max((body.width() / default_w) as u32 + 1);
     if st.col_widths.len() < cols as usize {
-        st.col_widths.resize(cols as usize, DEFAULT_W);
+        st.col_widths.resize(cols as usize, default_w);
+    }
+    let font = FontId::proportional(FONT_SIZE * zoom);
+    match st.fit.take() {
+        Some(Fit::Cols(a, b)) => {
+            for c in a..=b.min(cols - 1) {
+                st.col_widths[c as usize] = autofit(ui, sheet, c, &font);
+            }
+        }
+        Some(Fit::Rows(a, b)) => {
+            for r in a..=b.min(rows - 1) {
+                let h = autofit_row(ui, sheet, r, &font, st.row_heights.base());
+                st.row_heights.set(r, h);
+            }
+        }
+        None => {}
     }
     let xs = prefix(&st.col_widths[..cols as usize]);
     let rh = &st.row_heights;
@@ -150,7 +205,6 @@ pub fn show(
 
     let visuals = ui.visuals().clone();
     let pal = Palette::new(&visuals);
-    let font = FontId::proportional(13.0);
     let sel_fill = visuals.selection.bg_fill.gamma_multiply(0.35);
     let sel_stroke = Stroke::new(2.0, visuals.selection.bg_fill);
     let hit_fill = Color32::from_rgba_unmultiplied(255, 220, 0, 70);
@@ -162,6 +216,7 @@ pub fn show(
         area = area.scroll_offset(offset_to_show(target, &xs, rh, st.offset, body.size()));
     }
     let shift = ui.input(|i| i.modifiers.shift);
+    let secondary = ui.input(|i| i.pointer.secondary_down() || i.pointer.secondary_released());
     let out = ui
         .scope_builder(UiBuilder::new().max_rect(body), |ui| {
             area.show_viewport(ui, |ui, vp| {
@@ -241,7 +296,7 @@ pub fn show(
                         let rect = cell_rect(r, c);
                         // Default rows show the first line centred; taller rows show
                         // all lines from the top, clipped to the cell.
-                        let tall = rect.height() > ROW_H + 1.0;
+                        let tall = rect.height() > rh.base() + 1.0;
                         let (anchor, pos) = match (value.is_numeric(), tall) {
                             (true, false) => {
                                 (Align2::RIGHT_CENTER, rect.right_center() - vec2(PAD, 0.0))
@@ -338,8 +393,19 @@ pub fn show(
                     grid_out.double_clicked = true;
                 }
 
+                // Right-click outside the selection selects the clicked cell first.
+                if resp.secondary_clicked()
+                    && let Some(p) = resp.interact_pointer_pos()
+                {
+                    let cell = cell_at(p - origin, &xs, rh, rows, cols);
+                    if !st.selection.contains(cell) {
+                        st.selection = Selection::single(cell);
+                    }
+                }
+
                 // mouse selection
-                if resp.is_pointer_button_down_on()
+                if !secondary
+                    && resp.is_pointer_button_down_on()
                     && let Some(p) = ui.input(|i| i.pointer.interact_pos())
                 {
                     let cell = cell_at(p - origin, &xs, rh, rows, cols);
@@ -350,9 +416,11 @@ pub fn show(
                     }
                     st.scroll_to = Some(cell);
                 }
+                resp
             })
         })
         .inner;
+    grid_out.body = Some(out.inner);
     st.offset = out.state.clamped_offset();
     st.view = body.size();
 
@@ -372,7 +440,7 @@ pub fn show(
         let x0 = col_hdr.min.x + xs[c as usize] - st.offset.x;
         let rect = Rect::from_min_size(
             pos2(x0, col_hdr.min.y),
-            vec2(st.col_widths[c as usize], HEADER_H),
+            vec2(st.col_widths[c as usize], header_h),
         );
         if (tl.col..=br.col).contains(&c) {
             painter.rect_filled(rect, 0.0, sel_fill);
@@ -497,7 +565,7 @@ pub fn show(
     if row_resp.double_clicked()
         && let Some(r) = row_resp.interact_pointer_pos().and_then(|p| row_edge(p.y))
     {
-        let h = autofit_row(ui, sheet, r, &font);
+        let h = autofit_row(ui, sheet, r, &font, st.row_heights.base());
         st.row_heights.set(r, h);
     }
     if col_resp.drag_started() {
@@ -520,8 +588,37 @@ pub fn show(
     if col_resp.drag_stopped() || row_resp.drag_stopped() {
         st.resizing = None;
     }
+    // Right-click on a header outside the selection selects that column or row.
+    if col_resp.secondary_clicked()
+        && let Some(p) = col_resp.interact_pointer_pos()
+    {
+        let x = p.x - col_hdr.min.x + st.offset.x;
+        let c = (xs.partition_point(|&e| e <= x).saturating_sub(1) as u32).min(cols - 1);
+        if !(tl.col..=br.col).contains(&c) || tl.row != 0 || br.row < last_row {
+            st.selection = Selection {
+                anchor: CellPos::new(0, c),
+                cursor: CellPos::new(last_row, c),
+            };
+        }
+    }
+    if row_resp.secondary_clicked()
+        && let Some(p) = row_resp.interact_pointer_pos()
+    {
+        let r = st
+            .row_heights
+            .row_at(p.y - row_hdr.min.y + st.offset.y)
+            .min(rows - 1);
+        if !(tl.row..=br.row).contains(&r) || tl.col != 0 || br.col < last_col {
+            st.selection = Selection {
+                anchor: CellPos::new(r, 0),
+                cursor: CellPos::new(r, last_col),
+            };
+        }
+    }
     // A press on an edge resizes; anywhere else on a header it selects.
-    if st.resizing.is_none() && col_press_edge.is_none() {
+    if secondary {
+        // handled above
+    } else if st.resizing.is_none() && col_press_edge.is_none() {
         header_select(
             ui,
             &col_resp,
@@ -536,7 +633,7 @@ pub fn show(
             shift,
         );
     }
-    if st.resizing.is_none() && row_press_edge.is_none() {
+    if !secondary && st.resizing.is_none() && row_press_edge.is_none() {
         header_select(
             ui,
             &row_resp,
@@ -553,6 +650,8 @@ pub fn show(
     }
 
     ui.allocate_rect(full, Sense::hover());
+    grid_out.col_hdr = Some(col_resp);
+    grid_out.row_hdr = Some(row_resp);
     grid_out
 }
 
@@ -663,9 +762,9 @@ fn autofit(ui: &egui::Ui, sheet: &Sheet, c: u32, font: &FontId) -> f32 {
 }
 
 /// Height that shows every line of the tallest cell in row `r`.
-fn autofit_row(ui: &egui::Ui, sheet: &Sheet, r: u32, font: &FontId) -> f32 {
+fn autofit_row(ui: &egui::Ui, sheet: &Sheet, r: u32, font: &FontId, base: f32) -> f32 {
     if r >= sheet.rows {
-        return ROW_H;
+        return base;
     }
     let tallest = (0..sheet.cols)
         .map(|c| sheet.display(r, c))
@@ -677,7 +776,7 @@ fn autofit_row(ui: &egui::Ui, sheet: &Sheet, r: u32, font: &FontId) -> f32 {
                 .y
         })
         .fold(0.0, f32::max);
-    (tallest + 2.0 * TEXT_TOP).clamp(ROW_H, MAX_AUTOFIT_H)
+    (tallest + 2.0 * TEXT_TOP).clamp(base, MAX_AUTOFIT_H)
 }
 
 fn prefix(widths: &[f32]) -> Vec<f32> {
@@ -748,7 +847,7 @@ mod tests {
             .build_ui_state(
                 move |ui, (st, origin): &mut (GridState, egui::Pos2)| {
                     *origin = ui.available_rect_before_wrap().min;
-                    show(ui, &sheet, st, &[], None);
+                    show(ui, &sheet, st, &[], None, 1.0);
                 },
                 (GridState::default(), egui::Pos2::ZERO),
             )
@@ -780,6 +879,55 @@ mod tests {
             });
         }
         h.run();
+    }
+
+    fn right_click(h: &mut Harness<'static, (GridState, egui::Pos2)>, at: egui::Pos2) {
+        h.hover_at(at);
+        h.run();
+        for pressed in [true, false] {
+            h.event(egui::Event::PointerButton {
+                pos: at,
+                button: egui::PointerButton::Secondary,
+                pressed,
+                modifiers: egui::Modifiers::NONE,
+            });
+        }
+        h.run();
+    }
+
+    /// Centre of cell (r, c) at 100 % with the 40 px row header.
+    fn cell_center(o: egui::Pos2, r: u32, c: u32) -> egui::Pos2 {
+        o + vec2(
+            40.0 + c as f32 * DEFAULT_W + DEFAULT_W / 2.0,
+            HEADER_H + r as f32 * ROW_H + ROW_H / 2.0,
+        )
+    }
+
+    #[test]
+    fn right_click_outside_the_selection_selects_the_cell_inside_keeps_it() {
+        let mut h = harness();
+        h.run();
+        let o = h.state().1;
+        right_click(&mut h, cell_center(o, 2, 1));
+        assert_eq!(h.state().0.selection, Selection::single(CellPos::new(2, 1)));
+
+        let range = Selection {
+            anchor: CellPos::new(0, 0),
+            cursor: CellPos::new(3, 3),
+        };
+        h.state_mut().0.selection = range;
+        right_click(&mut h, cell_center(o, 1, 2));
+        assert_eq!(h.state().0.selection, range);
+    }
+
+    #[test]
+    fn right_click_on_a_column_header_selects_the_column() {
+        let mut h = harness();
+        h.run();
+        let o = h.state().1;
+        right_click(&mut h, o + vec2(40.0 + DEFAULT_W * 2.5, HEADER_H / 2.0));
+        let (tl, br) = h.state().0.selection.bounds();
+        assert_eq!((tl, br), (CellPos::new(0, 2), CellPos::new(4, 2)));
     }
 
     /// One text column, `rows` rows; `texts` puts text into chosen rows.

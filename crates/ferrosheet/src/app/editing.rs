@@ -32,6 +32,14 @@ pub(super) enum Op {
     },
     Undo,
     Redo,
+    AddSheet,
+    RenameSheet {
+        sheet: usize,
+        name: String,
+    },
+    DeleteSheet {
+        sheet: usize,
+    },
     Save {
         path: PathBuf,
         then: Option<After>,
@@ -71,7 +79,8 @@ const COLORS: [[u8; 3]; 9] = [
     [112, 48, 160],
 ];
 
-/// Files saved in place; everything else is saved as a new `.xlsx`.
+/// Files saved in place; everything else is saved as a new `.xlsx`. A text file
+/// holds one sheet, so once sheets were added it becomes a workbook.
 fn saves_in_place(doc: &Doc) -> bool {
     let ext = doc
         .path
@@ -79,7 +88,7 @@ fn saves_in_place(doc: &Doc) -> bool {
         .map(|e| e.to_string_lossy().to_ascii_lowercase());
     match ext.as_deref() {
         Some("xlsx") => true,
-        _ => doc.text_format.is_some(),
+        _ => doc.text_format.is_some() && doc.names.len() == 1,
     }
 }
 
@@ -112,6 +121,50 @@ pub(super) fn refresh_sheet(doc: &mut Doc, idx: usize) {
     }
 }
 
+/// Follows the model's sheet list after adding, renaming, deleting or undoing one.
+/// Sheets keep their view (selection, widths); a sheet the viewer never had (a new one,
+/// or one brought back by undo) is taken from the model. A new sheet becomes active.
+fn sync_sheets(doc: &mut Doc) {
+    let Engine::Ready(s) = &doc.engine else {
+        return;
+    };
+    doc.names = s.sheet_names();
+    let ids = s.sheet_ids();
+    if ids == doc.ids {
+        return;
+    }
+    let active_id = doc.ids.get(doc.active).copied();
+    let mut old: Vec<_> = doc
+        .ids
+        .drain(..)
+        .zip(doc.sheets.drain(..).zip(doc.source.drain(..)))
+        .collect();
+    let mut added = None;
+    for (pos, &id) in ids.iter().enumerate() {
+        match old.iter().position(|o| o.0 == id) {
+            Some(k) => {
+                let (_, (view, source)) = old.swap_remove(k);
+                doc.sheets.push(view);
+                doc.source.push(source);
+            }
+            None => {
+                let (sheet, formulas) = s.snapshot(pos);
+                let mut v = SheetView::new(Arc::new(sheet));
+                v.formulas = formulas;
+                v.formulas_loaded = true;
+                doc.sheets.push(Some(v));
+                doc.source.push(None);
+                added.get_or_insert(pos);
+            }
+        }
+    }
+    doc.ids = ids;
+    doc.active = added
+        .or_else(|| active_id.and_then(|a| doc.ids.iter().position(|&i| i == a)))
+        .unwrap_or(doc.active)
+        .min(doc.ids.len().saturating_sub(1));
+}
+
 impl App {
     pub(super) fn dirty(&self) -> bool {
         self.doc.as_ref().is_some_and(|d| d.dirty)
@@ -120,7 +173,10 @@ impl App {
     /// Queues a change; the first one starts building the model.
     pub(super) fn queue(&mut self, ctx: &egui::Context, op: Op) {
         let Some(doc) = &mut self.doc else { return };
-        if matches!(doc.engine, Engine::Failed(_)) {
+        // Say why instead of silently ignoring the change.
+        if let Engine::Failed(why) = &doc.engine {
+            self.error = Some(why.clone());
+            self.error_title = Some(text::edit_failed());
             return;
         }
         if !matches!(op, Op::Save { .. }) {
@@ -137,9 +193,7 @@ impl App {
                 });
                 doc.engine = Engine::Building(rx);
             } else {
-                (0..doc.names.len())
-                    .filter(|&i| doc.sheets[i].is_none())
-                    .for_each(|i| doc.loader.request_sheet(i));
+                doc.request_missing();
                 doc.engine = Engine::WaitingForSheets;
             }
         }
@@ -175,7 +229,9 @@ impl App {
             }
             Engine::Building(rx) => match rx.try_recv() {
                 Ok(Ok(s)) => {
+                    doc.ids = s.sheet_ids();
                     doc.engine = Engine::Ready(Box::new(s));
+                    sync_sheets(doc);
                     for idx in 0..doc.sheets.len() {
                         refresh_sheet(doc, idx);
                     }
@@ -224,11 +280,15 @@ impl App {
                     s.redo();
                     Ok(())
                 }
+                Op::AddSheet => s.add_sheet(),
+                Op::RenameSheet { sheet, name } => s.rename_sheet(sheet, &name),
+                Op::DeleteSheet { sheet } => s.delete_sheet(sheet),
                 Op::Save { path, then } => {
                     self.write(ctx, path, then);
                     continue;
                 }
             };
+            sync_sheets(doc);
             for idx in 0..doc.sheets.len() {
                 refresh_sheet(doc, idx);
             }
@@ -254,6 +314,7 @@ impl App {
             Ok(()) => {
                 if path != doc.path {
                     doc.text_format = None;
+                    self.recent.push(&path);
                     doc.path = path;
                 }
                 doc.dirty = false;
@@ -379,6 +440,12 @@ impl App {
         let Some(Some(v)) = doc.sheets.get_mut(idx) else {
             return;
         };
+        // Without the formulas the editor would start with a result and overwrite the
+        // formula behind it. They arrive a moment after the values.
+        if session.is_none() && !v.formulas_loaded {
+            self.status = Some((text::formulas_loading().into(), f64::NAN));
+            return;
+        }
         let pos = v.grid.selection.cursor;
         let original = match session {
             Some(s) => s.content(idx, pos.row, pos.col),
@@ -491,10 +558,22 @@ impl App {
         self.style(ctx, change);
     }
 
+    /// Style of the cursor cell, for the toggles in the toolbar and menus.
+    pub(super) fn cursor_style(&mut self) -> ferrosheet_core::CellStyle {
+        self.active_view()
+            .map(|v| {
+                let cur = v.grid.selection.cursor;
+                v.sheet.style(cur.row, cur.col)
+            })
+            .unwrap_or_default()
+    }
+
+    /// Toolbar under the menu: save and the most used formatting.
     pub(super) fn format_bar(&mut self, ui: &mut egui::Ui) {
-        let Some(v) = self.active_view() else { return };
-        let cur = v.grid.selection.cursor;
-        let st = v.sheet.style(cur.row, cur.col);
+        if self.active_view().is_none() {
+            return;
+        }
+        let st = self.cursor_style();
         let mut change = None;
         ui.horizontal(|ui| {
             let save = ui
@@ -520,23 +599,9 @@ impl App {
             {
                 change = Some(StyleChange::Italic(!st.italic));
             }
-            ui.menu_button(text::text_color(), |ui| {
-                if let Some(c) = swatches(ui) {
-                    change = Some(StyleChange::Color(c));
-                }
-            });
-            ui.menu_button(text::fill_color(), |ui| {
-                if let Some(c) = swatches(ui) {
-                    change = Some(StyleChange::Fill(c));
-                }
-            });
-            ui.menu_button(text::number_format(), |ui| {
-                for f in NumberFormat::ALL {
-                    if ui.button(text::number_format_name(f)).clicked() {
-                        change = Some(StyleChange::Number(f));
-                    }
-                }
-            });
+            if let Some(c) = colour_and_number_menus(ui) {
+                change = Some(c);
+            }
             let status = self.doc.as_ref().is_some_and(|d| {
                 matches!(d.engine, Engine::WaitingForSheets | Engine::Building(_))
             });
@@ -549,6 +614,30 @@ impl App {
             self.style(&ui.ctx().clone(), c);
         }
     }
+}
+
+/// Text colour, fill colour and number format as menus (toolbar, Format menu and the
+/// right-click menu share them).
+pub(super) fn colour_and_number_menus(ui: &mut egui::Ui) -> Option<StyleChange> {
+    let mut change = None;
+    ui.menu_button(text::text_color(), |ui| {
+        if let Some(c) = swatches(ui) {
+            change = Some(StyleChange::Color(c));
+        }
+    });
+    ui.menu_button(text::fill_color(), |ui| {
+        if let Some(c) = swatches(ui) {
+            change = Some(StyleChange::Fill(c));
+        }
+    });
+    ui.menu_button(text::number_format(), |ui| {
+        for f in NumberFormat::ALL {
+            if ui.button(text::number_format_name(f)).clicked() {
+                change = Some(StyleChange::Number(f));
+            }
+        }
+    });
+    change
 }
 
 /// A row of colour buttons plus "None"; returns the picked colour.

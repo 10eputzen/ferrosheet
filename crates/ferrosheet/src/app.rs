@@ -9,20 +9,51 @@ use std::sync::mpsc::{Receiver, TryRecvError};
 
 use eframe::egui::{self, Event, Key, Modifiers, ViewportCommand};
 use ferrosheet_core::{
-    CellPos, CopyFormat, EXTENSIONS, Query, Selection, Sheet, TextFormat, cell_address, copy_text,
-    find_all,
+    CellPos, CellStyle, CopyFormat, EXTENSIONS, Query, Selection, Sheet, StyleChange, TextFormat,
+    cell_address, copy_text, find_all,
 };
 
 use editing::{After, Engine, Op};
 
-use crate::grid::{self, GridState};
+use crate::grid::{self, Fit, GridOut, GridState};
 use crate::loader::{LoadMsg, Loader};
+use crate::recent::Recent;
 use crate::text;
 use crate::update;
 
 /// Above this many cells the search runs on Enter instead of while typing.
 const LIVE_SEARCH_MAX_CELLS: u64 = 200_000;
 const STATUS_SECS: f64 = 2.0;
+const ZOOM_STEPS: [f32; 13] = [
+    0.5, 0.67, 0.75, 0.8, 0.9, 1.0, 1.1, 1.25, 1.5, 1.75, 2.0, 2.5, 3.0,
+];
+
+/// Something the user asked for through a menu, a button or the sheet tabs.
+enum Cmd {
+    Open,
+    OpenRecent(PathBuf),
+    Save,
+    SaveAs,
+    Exit,
+    Undo,
+    Redo,
+    Cut,
+    Copy(CopyFormat),
+    Clear,
+    Find,
+    Bold,
+    Italic,
+    Style(StyleChange),
+    Zoom(f32),
+    SelectCols,
+    SelectRows,
+    FitCols,
+    FitRows,
+    Switch(usize),
+    NewSheet,
+    Rename(usize, String),
+    DeleteSheet(usize),
+}
 
 struct SheetView {
     sheet: Arc<Sheet>,
@@ -48,6 +79,10 @@ struct Doc {
     loader: Loader,
     names: Vec<String>,
     sheets: Vec<Option<SheetView>>,
+    /// Per sheet: its index in the file (for the loader); `None` for a sheet added here.
+    source: Vec<Option<usize>>,
+    /// Per sheet: the model's sheet id, once the model is built.
+    ids: Vec<u32>,
     active: usize,
     /// How a text file was written; `None` for workbooks.
     text_format: Option<TextFormat>,
@@ -56,6 +91,25 @@ struct Doc {
     pending: VecDeque<Op>,
     /// Changed since opened or saved.
     dirty: bool,
+}
+
+impl Doc {
+    /// Position of the sheet the loader calls `loader_idx` (sheets may have moved).
+    fn position(&self, loader_idx: usize) -> Option<usize> {
+        self.source.iter().position(|s| *s == Some(loader_idx))
+    }
+
+    fn request(&self, pos: usize) {
+        if let Some(Some(i)) = self.source.get(pos) {
+            self.loader.request_sheet(*i);
+        }
+    }
+
+    fn request_missing(&self) {
+        (0..self.sheets.len())
+            .filter(|&i| self.sheets[i].is_none())
+            .for_each(|i| self.request(i));
+    }
 }
 
 #[derive(Default)]
@@ -101,6 +155,13 @@ pub struct App {
     allow_close: bool,
     /// Window title last sent.
     title: String,
+    recent: Recent,
+    /// Grid zoom, 1.0 = 100 % (0 = not set yet).
+    zoom: f32,
+    /// Sheet tab being renamed: index, text, focus it next frame.
+    rename: Option<(usize, String, bool)>,
+    /// Asking whether to delete this sheet.
+    confirm_delete: Option<usize>,
 }
 
 impl App {
@@ -110,7 +171,12 @@ impl App {
     }
 
     pub fn new(ctx: &egui::Context, path: Option<PathBuf>) -> Self {
-        let mut app = App::default();
+        let mut app = App {
+            recent: Recent::load(),
+            ..App::default()
+        };
+        // Ctrl+Plus/Minus zoom the grid, not the whole window.
+        ctx.options_mut(|o| o.zoom_with_keyboard = false);
         if let Some(rx) = update::check(ctx.clone()) {
             app.update = Update::Downloading(rx);
         }
@@ -164,6 +230,8 @@ impl App {
             loader: Loader::open(path, ctx.clone()),
             names: Vec::new(),
             sheets: Vec::new(),
+            source: Vec::new(),
+            ids: Vec::new(),
             active: 0,
             text_format: None,
             engine: Engine::Idle,
@@ -211,8 +279,10 @@ impl App {
             match msg {
                 LoadMsg::Opened { names, text_format } => {
                     doc.sheets = names.iter().map(|_| None).collect();
+                    doc.source = (0..names.len()).map(Some).collect();
                     doc.names = names;
                     doc.text_format = text_format;
+                    self.recent.push(&doc.path);
                     if let Some(i) = self.restore_sheet.take()
                         && i < doc.names.len()
                     {
@@ -221,6 +291,10 @@ impl App {
                     }
                 }
                 LoadMsg::Sheet { idx, sheet } => {
+                    // deleted meanwhile
+                    let Some(idx) = doc.position(idx) else {
+                        continue;
+                    };
                     // A big sheet arrives twice: first a preview of its top rows, then
                     // in full. Keep the view (selection, scroll, widths) when it grows.
                     match &mut doc.sheets[idx] {
@@ -232,6 +306,9 @@ impl App {
                     self.search.dirty = true;
                 }
                 LoadMsg::Formulas { idx, map } => {
+                    let Some(idx) = doc.position(idx) else {
+                        continue;
+                    };
                     if let Some(v) = &mut doc.sheets[idx] {
                         v.formulas = map;
                         v.formulas_loaded = true;
@@ -243,6 +320,9 @@ impl App {
                     sheet: Some(idx),
                     msg,
                 } => {
+                    let Some(idx) = doc.position(idx) else {
+                        continue;
+                    };
                     let mut v = SheetView::new(Arc::new(Sheet::empty(doc.names[idx].clone())));
                     v.formulas_loaded = true;
                     doc.sheets[idx] = Some(v);
@@ -266,7 +346,85 @@ impl App {
         }
         doc.active = idx;
         if doc.sheets[idx].is_none() {
-            doc.loader.request_sheet(idx);
+            doc.request(idx);
+        }
+    }
+
+    fn zoom(&self) -> f32 {
+        if self.zoom > 0.0 { self.zoom } else { 1.0 }
+    }
+
+    fn set_zoom(&mut self, z: f32) {
+        self.zoom = (z.clamp(grid::MIN_ZOOM, grid::MAX_ZOOM) * 100.0).round() / 100.0;
+    }
+
+    /// The next zoom step up or down from the current zoom.
+    fn zoom_step(&self, up: bool) -> f32 {
+        let z = self.zoom();
+        if up {
+            ZOOM_STEPS.into_iter().find(|&s| s > z + 0.001)
+        } else {
+            ZOOM_STEPS.into_iter().rev().find(|&s| s < z - 0.001)
+        }
+        .unwrap_or(z)
+    }
+
+    fn run(&mut self, ctx: &egui::Context, cmd: Cmd) {
+        match cmd {
+            Cmd::Open => self.open_dialog(ctx),
+            Cmd::OpenRecent(p) => self.request_open(ctx, p),
+            Cmd::Save => self.save(ctx, None),
+            Cmd::SaveAs => self.save_as(ctx, None),
+            Cmd::Exit => ctx.send_viewport_cmd(ViewportCommand::Close),
+            Cmd::Undo => self.undo(ctx, false),
+            Cmd::Redo => self.undo(ctx, true),
+            Cmd::Cut => {
+                self.copy(ctx, CopyFormat::Display);
+                self.clear_selection(ctx);
+            }
+            Cmd::Copy(f) => self.copy(ctx, f),
+            Cmd::Clear => self.clear_selection(ctx),
+            Cmd::Find => {
+                self.search.open = true;
+                self.search.focus = true;
+            }
+            Cmd::Bold => self.toggle(ctx, false),
+            Cmd::Italic => self.toggle(ctx, true),
+            Cmd::Style(c) => self.style(ctx, c),
+            Cmd::Zoom(z) => self.set_zoom(z),
+            Cmd::SelectCols | Cmd::SelectRows | Cmd::FitCols | Cmd::FitRows => {
+                self.whole_lines(&cmd)
+            }
+            Cmd::Switch(i) => self.switch_sheet(i),
+            Cmd::NewSheet => self.queue(ctx, Op::AddSheet),
+            Cmd::Rename(sheet, name) => self.queue(ctx, Op::RenameSheet { sheet, name }),
+            Cmd::DeleteSheet(sheet) => self.queue(ctx, Op::DeleteSheet { sheet }),
+        }
+    }
+
+    /// Selects or fits the columns or rows the selection touches.
+    fn whole_lines(&mut self, cmd: &Cmd) {
+        let Some(v) = self.active_view() else { return };
+        let (tl, br) = v.grid.selection.bounds();
+        let last_row = v.sheet.rows.max(br.row + 1) - 1;
+        let last_col = v.sheet.cols.max(br.col + 1) - 1;
+        let g = &mut v.grid;
+        match cmd {
+            Cmd::SelectCols => {
+                g.selection = Selection {
+                    anchor: CellPos::new(0, tl.col),
+                    cursor: CellPos::new(last_row, br.col),
+                }
+            }
+            Cmd::SelectRows => {
+                g.selection = Selection {
+                    anchor: CellPos::new(tl.row, 0),
+                    cursor: CellPos::new(br.row, last_col),
+                }
+            }
+            Cmd::FitCols => g.fit = Some(Fit::Cols(tl.col, br.col)),
+            Cmd::FitRows => g.fit = Some(Fit::Rows(tl.row, br.row)),
+            _ => {}
         }
     }
 
@@ -385,9 +543,7 @@ impl App {
                 if self.search.all_sheets
                     && let Some(doc) = &self.doc
                 {
-                    (0..doc.names.len())
-                        .filter(|&i| doc.sheets[i].is_none())
-                        .for_each(|i| doc.loader.request_sheet(i));
+                    doc.request_missing();
                 }
             }
             if ui
@@ -451,12 +607,14 @@ impl App {
 
     fn keyboard(&mut self, ctx: &egui::Context) {
         let mut copy = None;
+        let mut cut = false;
         let mut actions = Vec::new();
         let mut typed = String::new();
         ctx.input(|i| {
             for e in &i.events {
                 match e {
                     Event::Copy => copy = Some(CopyFormat::Display),
+                    Event::Cut => cut = true,
                     Event::Text(t) => typed.push_str(t),
                     Event::Key {
                         key,
@@ -508,6 +666,9 @@ impl App {
                     }
                 }
                 Key::C if ctrl && m.shift && !editing => copy = Some(CopyFormat::Invariant),
+                Key::Plus | Key::Equals if ctrl => self.set_zoom(self.zoom_step(true)),
+                Key::Minus if ctrl => self.set_zoom(self.zoom_step(false)),
+                Key::Num0 if ctrl => self.set_zoom(1.0),
                 _ if editing || cell => {}
                 Key::Z if ctrl => self.undo(ctx, m.shift),
                 Key::Y if ctrl => self.undo(ctx, true),
@@ -521,6 +682,14 @@ impl App {
         }
         if let Some(f) = copy.filter(|_| !editing) {
             self.copy(ctx, f);
+        }
+        if cut && !editing && !modal {
+            self.run(ctx, Cmd::Cut);
+        }
+        // Ctrl + mouse wheel
+        let zoom = ctx.input(|i| i.zoom_delta());
+        if zoom != 1.0 && self.doc.is_some() {
+            self.set_zoom(self.zoom() * zoom);
         }
     }
 
@@ -563,19 +732,80 @@ impl App {
 
     // ---- panels ------------------------------------------------------------
 
-    fn top_bar(&mut self, ui: &mut egui::Ui) {
+    /// File, Edit, View and Format, like every office program.
+    fn menu_bar(&mut self, ui: &mut egui::Ui) -> Option<Cmd> {
+        let mut cmd = None;
+        let view = self.active_view().is_some();
+        let doc = self.doc.is_some();
+        let dirty = self.dirty();
+        let st = self.cursor_style();
+        let recent: Vec<PathBuf> = self.recent.existing().cloned().collect();
+        egui::MenuBar::new().ui(ui, |ui| {
+            ui.menu_button(text::menu_file(), |ui| {
+                item(ui, &mut cmd, text::open(), "Ctrl+O", true, Cmd::Open);
+                ui.menu_button(text::recent(), |ui| recent_items(ui, &recent, &mut cmd));
+                ui.separator();
+                item(ui, &mut cmd, text::save(), "Ctrl+S", dirty, Cmd::Save);
+                item(
+                    ui,
+                    &mut cmd,
+                    text::save_as(),
+                    "Ctrl+Shift+S",
+                    doc,
+                    Cmd::SaveAs,
+                );
+                ui.separator();
+                item(ui, &mut cmd, text::exit(), "", true, Cmd::Exit);
+            });
+            ui.menu_button(text::menu_edit(), |ui| {
+                item(ui, &mut cmd, text::undo(), "Ctrl+Z", view, Cmd::Undo);
+                item(ui, &mut cmd, text::redo(), "Ctrl+Y", view, Cmd::Redo);
+                ui.separator();
+                edit_items(ui, &mut cmd, view);
+                ui.separator();
+                item(ui, &mut cmd, text::find(), "Ctrl+F", doc, Cmd::Find);
+            });
+            ui.menu_button(text::menu_view(), |ui| {
+                let (up, down) = (self.zoom_step(true), self.zoom_step(false));
+                item(ui, &mut cmd, text::zoom_in(), "Ctrl++", doc, Cmd::Zoom(up));
+                item(
+                    ui,
+                    &mut cmd,
+                    text::zoom_out(),
+                    "Ctrl+-",
+                    doc,
+                    Cmd::Zoom(down),
+                );
+                item(
+                    ui,
+                    &mut cmd,
+                    text::zoom_reset(),
+                    "Ctrl+0",
+                    doc,
+                    Cmd::Zoom(1.0),
+                );
+            });
+            ui.add_enabled_ui(view, |ui| {
+                ui.menu_button(text::menu_format(), |ui| format_items(ui, &mut cmd, st));
+            });
+        });
+        cmd
+    }
+
+    /// Menu, toolbar, formula bar and (when open) the search, top to bottom.
+    fn top_bar(&mut self, ui: &mut egui::Ui) -> Option<Cmd> {
+        let mut cmd = None;
         let mut start_in_bar = false;
         let mut leave_bar = false;
         egui::Panel::top("top").show(ui, |ui| {
-            ui.add_space(2.0);
-            ui.horizontal(|ui| {
-                if ui.button(text::open()).clicked() {
-                    self.open_dialog(ui.ctx());
-                }
-                if let Some(v) = self.active_view() {
+            cmd = self.menu_bar(ui);
+            self.format_bar(ui);
+            if let Some(v) = self.active_view() {
+                ui.horizontal(|ui| {
                     let cur = v.grid.selection.cursor;
-                    ui.separator();
-                    let address = ui.monospace(cell_address(cur.row, cur.col));
+                    let name = egui::RichText::new(cell_address(cur.row, cur.col)).monospace();
+                    let address = ui.add_sized([56.0, 20.0], egui::Label::new(name));
+                    ui.weak(text::formula_label());
                     let bar = |text| {
                         egui::TextEdit::singleline(text)
                             .id(grid::bar_id())
@@ -607,9 +837,8 @@ impl App {
                             }
                         }
                     }
-                }
-            });
-            self.format_bar(ui);
+                });
+            }
             if self.search.open {
                 self.search_bar(ui);
             }
@@ -629,32 +858,93 @@ impl App {
         if leave_bar {
             self.commit_edit(&ctx, None);
         }
+        cmd
     }
 
-    fn bottom_bar(&mut self, ui: &mut egui::Ui) {
+    /// Sheet tabs: click switches, double-click renames, right-click for more, "+" adds.
+    fn sheet_tabs(&mut self, ui: &mut egui::Ui, cmd: &mut Option<Cmd>) {
+        let Some(doc) = &self.doc else { return };
+        let names = doc.names.clone();
+        let active = doc.active;
+        let many = names.len() > 1;
+        for (i, name) in names.iter().enumerate() {
+            if let Some((r, buf, focus)) = &mut self.rename
+                && *r == i
+            {
+                let resp = ui.add(
+                    egui::TextEdit::singleline(buf)
+                        .id(egui::Id::unique("rename_sheet"))
+                        .desired_width(120.0),
+                );
+                if std::mem::take(focus) {
+                    resp.request_focus();
+                } else if resp.lost_focus() {
+                    let esc = ui.input(|i| i.key_pressed(Key::Escape));
+                    if let Some((r, buf, _)) = self.rename.take() {
+                        let new = buf.trim();
+                        if !esc && !new.is_empty() && new != name {
+                            *cmd = Some(Cmd::Rename(r, new.to_owned()));
+                        }
+                    }
+                }
+                continue;
+            }
+            let resp = ui
+                .selectable_label(i == active, name)
+                .on_hover_text(text::sheet_rename_hint());
+            if resp.clicked() {
+                *cmd = Some(Cmd::Switch(i));
+            }
+            if resp.double_clicked() {
+                self.rename = Some((i, name.clone(), true));
+            }
+            resp.context_menu(|ui| {
+                if ui.button(text::rename_sheet()).clicked() {
+                    self.rename = Some((i, name.clone(), true));
+                }
+                if ui
+                    .add_enabled(many, egui::Button::new(text::delete_sheet()))
+                    .clicked()
+                {
+                    self.confirm_delete = Some(i);
+                }
+            });
+        }
+        if ui.button("+").on_hover_text(text::new_sheet()).clicked() {
+            *cmd = Some(Cmd::NewSheet);
+        }
+    }
+
+    fn bottom_bar(&mut self, ui: &mut egui::Ui) -> Option<Cmd> {
         let now = ui.input(|i| i.time);
+        // a message set without access to the clock starts now
+        if let Some((_, t)) = &mut self.status
+            && t.is_nan()
+        {
+            *t = now;
+        }
+        let mut cmd = None;
         let mut start_update = false;
+        let zoom = self.zoom();
         egui::Panel::bottom("tabs").show(ui, |ui| {
             ui.horizontal(|ui| {
-                let mut switch = None;
-                if let Some(doc) = &self.doc {
+                if self.doc.is_some() {
                     egui::ScrollArea::horizontal()
                         .id_salt("tabs")
-                        .max_width(ui.available_width() - 200.0)
+                        .max_width(ui.available_width() - 260.0)
                         .show(ui, |ui| {
-                            ui.horizontal(|ui| {
-                                for (i, name) in doc.names.iter().enumerate() {
-                                    if ui.selectable_label(i == doc.active, name).clicked() {
-                                        switch = Some(i);
-                                    }
-                                }
-                            });
+                            ui.horizontal(|ui| self.sheet_tabs(ui, &mut cmd));
                         });
                 }
-                if let Some(i) = switch {
-                    self.switch_sheet(i);
-                }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if self.doc.is_some()
+                        && ui
+                            .add(egui::Button::new(text::zoom_percent(zoom)).frame(false))
+                            .on_hover_text(text::zoom_hint())
+                            .clicked()
+                    {
+                        cmd = Some(Cmd::Zoom(1.0));
+                    }
                     if let Update::Ready(v) = &self.update {
                         start_update = ui.link(text::update_ready(v)).clicked();
                         ui.separator();
@@ -683,6 +973,73 @@ impl App {
         });
         if start_update {
             self.restart_for_update(&ui.ctx().clone());
+        }
+        cmd
+    }
+
+    /// Right-click menus of the cells and the column and row headers.
+    fn grid_menus(&mut self, out: &GridOut) -> Option<Cmd> {
+        let mut cmd = None;
+        let st = self.cursor_style();
+        if let Some(r) = &out.body {
+            r.context_menu(|ui| {
+                edit_items(ui, &mut cmd, true);
+                ui.separator();
+                format_items(ui, &mut cmd, st);
+            });
+        }
+        if let Some(r) = &out.col_hdr {
+            r.context_menu(|ui| {
+                item(
+                    ui,
+                    &mut cmd,
+                    text::select_column(),
+                    "",
+                    true,
+                    Cmd::SelectCols,
+                );
+                item(ui, &mut cmd, text::fit_width(), "", true, Cmd::FitCols);
+                ui.separator();
+                edit_items(ui, &mut cmd, true);
+            });
+        }
+        if let Some(r) = &out.row_hdr {
+            r.context_menu(|ui| {
+                item(ui, &mut cmd, text::select_row(), "", true, Cmd::SelectRows);
+                item(ui, &mut cmd, text::fit_height(), "", true, Cmd::FitRows);
+                ui.separator();
+                edit_items(ui, &mut cmd, true);
+            });
+        }
+        cmd
+    }
+
+    fn delete_sheet_modal(&mut self, ctx: &egui::Context) {
+        let Some(i) = self.confirm_delete else { return };
+        let name = self
+            .doc
+            .as_ref()
+            .and_then(|d| d.names.get(i).cloned())
+            .unwrap_or_default();
+        let mut delete = false;
+        let resp = egui::Modal::new(egui::Id::unique("delete_sheet")).show(ctx, |ui| {
+            ui.set_max_width(420.0);
+            ui.heading(text::delete_sheet_title());
+            ui.label(text::delete_sheet_question(&name));
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                delete = ui.button(text::delete()).clicked();
+                if ui.button(text::cancel()).clicked() {
+                    self.confirm_delete = None;
+                }
+            });
+        });
+        if resp.should_close() {
+            self.confirm_delete = None;
+        }
+        if delete {
+            self.confirm_delete = None;
+            self.run(ctx, Cmd::DeleteSheet(i));
         }
     }
 
@@ -764,12 +1121,40 @@ impl eframe::App for App {
             self.run_search();
         }
 
-        self.top_bar(ui);
-        self.bottom_bar(ui);
+        let mut cmd = self.top_bar(ui);
+        if let Some(c) = self.bottom_bar(ui) {
+            cmd = Some(c);
+        }
+        let zoom = self.zoom();
         let mut grid_out = None;
         egui::CentralPanel::no_frame().show(ui, |ui| match &mut self.doc {
             None => {
-                ui.centered_and_justified(|ui| ui.weak(text::open_hint()));
+                ui.vertical_centered(|ui| {
+                    ui.add_space(ui.available_height() * 0.25);
+                    ui.weak(text::open_hint());
+                    ui.add_space(8.0);
+                    if ui.button(text::open_button()).clicked() {
+                        cmd = Some(Cmd::Open);
+                    }
+                    let recent: Vec<_> = self.recent.existing().cloned().collect();
+                    if !recent.is_empty() {
+                        ui.add_space(16.0);
+                        ui.strong(text::recent());
+                        for p in recent {
+                            let name = p
+                                .file_name()
+                                .map(|n| n.to_string_lossy().into_owned())
+                                .unwrap_or_default();
+                            if ui
+                                .link(name)
+                                .on_hover_text(p.display().to_string())
+                                .clicked()
+                            {
+                                cmd = Some(Cmd::OpenRecent(p));
+                            }
+                        }
+                    }
+                });
             }
             Some(doc) => match doc.sheets.get_mut(doc.active).and_then(Option::as_mut) {
                 Some(v) if v.sheet.rows == 0 => {
@@ -793,7 +1178,7 @@ impl eframe::App for App {
                         .map(|i| self.search.hits[i])
                         .filter(|h| h.0 == active)
                         .map(|h| h.1);
-                    grid_out = Some(grid::show(ui, &v.sheet, &mut v.grid, &hits, current));
+                    grid_out = Some(grid::show(ui, &v.sheet, &mut v.grid, &hits, current, zoom));
                 }
                 None => {
                     ui.centered_and_justified(|ui| {
@@ -805,16 +1190,87 @@ impl eframe::App for App {
                 }
             },
         });
-        if let Some(out) = grid_out {
+        if let Some(out) = &grid_out {
             if out.edit_left {
                 self.commit_edit(&ctx, None);
             } else if out.double_clicked && !self.editing_cell() {
                 self.start_edit(None);
             }
+            if let Some(c) = self.grid_menus(out) {
+                cmd = Some(c);
+            }
+        }
+        if let Some(c) = cmd {
+            self.run(&ctx, c);
         }
         self.update_title(&ctx);
         self.confirm_modal(&ctx);
+        self.delete_sheet_modal(&ctx);
         self.error_modal(&ctx);
+    }
+}
+
+/// A menu entry with its shortcut; picking it sets `cmd`.
+fn item(ui: &mut egui::Ui, cmd: &mut Option<Cmd>, label: &str, keys: &str, on: bool, c: Cmd) {
+    let mut b = egui::Button::new(label);
+    if !keys.is_empty() {
+        b = b.shortcut_text(text::shortcut(keys));
+    }
+    if ui.add_enabled(on, b).clicked() {
+        *cmd = Some(c);
+    }
+}
+
+fn edit_items(ui: &mut egui::Ui, cmd: &mut Option<Cmd>, on: bool) {
+    item(ui, cmd, text::cut(), "Ctrl+X", on, Cmd::Cut);
+    item(
+        ui,
+        cmd,
+        text::copy(),
+        "Ctrl+C",
+        on,
+        Cmd::Copy(CopyFormat::Display),
+    );
+    let raw = Cmd::Copy(CopyFormat::Invariant);
+    item(ui, cmd, text::copy_raw(), "Ctrl+Shift+C", on, raw);
+    item(ui, cmd, text::clear_contents(), "Del", on, Cmd::Clear);
+}
+
+fn format_items(ui: &mut egui::Ui, cmd: &mut Option<Cmd>, st: CellStyle) {
+    let bold = egui::Button::new(text::bold_name())
+        .selected(st.bold)
+        .shortcut_text(text::shortcut("Ctrl+B"));
+    if ui.add(bold).clicked() {
+        *cmd = Some(Cmd::Bold);
+    }
+    let italic = egui::Button::new(text::italic_name())
+        .selected(st.italic)
+        .shortcut_text(text::shortcut("Ctrl+I"));
+    if ui.add(italic).clicked() {
+        *cmd = Some(Cmd::Italic);
+    }
+    ui.separator();
+    if let Some(c) = editing::colour_and_number_menus(ui) {
+        *cmd = Some(Cmd::Style(c));
+    }
+}
+
+fn recent_items(ui: &mut egui::Ui, recent: &[PathBuf], cmd: &mut Option<Cmd>) {
+    if recent.is_empty() {
+        ui.add_enabled(false, egui::Button::new(text::no_recent()));
+    }
+    for p in recent {
+        let name = p
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        if ui
+            .button(name)
+            .on_hover_text(p.display().to_string())
+            .clicked()
+        {
+            *cmd = Some(Cmd::OpenRecent(p.clone()));
+        }
     }
 }
 
@@ -853,7 +1309,7 @@ mod tests {
     use egui_kittest::kittest::Queryable;
     use ferrosheet_core::{CellPos, CellValue, Locale, Selection, Workbook};
 
-    use super::{App, Engine};
+    use super::{App, Cmd, Engine};
     use crate::{grid, text};
     use eframe::egui::accesskit::Role;
 
@@ -1225,6 +1681,126 @@ mod tests {
             let v = app.active_view().unwrap();
             !v.sheet.style(1, 1).bold
         });
+    }
+
+    #[test]
+    fn f2_on_a_formula_cell_edits_the_formula_not_its_result() {
+        let mut h = open(demo());
+        select(&mut h, 1, 3); // D2 holds a formula
+        h.key_press(Key::F2);
+        h.run();
+        let v = h.state_mut().active_view().unwrap();
+        let formula = v.formulas.get(&(1, 3)).cloned().expect("D2 has a formula");
+        assert!(formula.starts_with('='), "{formula}");
+        assert_eq!(v.grid.edit.as_ref().map(|e| e.text.clone()), Some(formula));
+        h.key_press(Key::Escape);
+        h.run();
+    }
+
+    #[test]
+    fn the_edit_menu_copies_and_the_format_menu_makes_bold() {
+        let mut h = open(demo());
+        select(&mut h, 1, 1);
+        h.get_by_label("Edit").click();
+        h.run();
+        h.get_all_by_label_contains("Copy").next().unwrap().click();
+        h.run();
+        let status = h.state().status.as_ref().map(|s| s.0.clone());
+        assert_eq!(status, Some(text::copied(1)));
+        h.get_by_label("Format").click();
+        h.run();
+        h.get_by_label_contains("Bold").click();
+        settle(&mut h, |app| {
+            app.active_view().unwrap().sheet.style(1, 1).bold
+        });
+    }
+
+    fn run(h: &mut Harness<'_, App>, cmd: Cmd) {
+        let ctx = h.ctx.clone();
+        h.state_mut().run(&ctx, cmd);
+        h.run();
+    }
+
+    fn names(h: &Harness<'_, App>) -> Vec<String> {
+        h.state().doc.as_ref().unwrap().names.clone()
+    }
+
+    #[test]
+    fn sheets_are_added_renamed_deleted_and_undo_brings_one_back() {
+        let mut h = open(demo());
+        let before = names(&h);
+        let n = before.len();
+        h.get_by_label("+").click();
+        settle(&mut h, |app| app.doc.as_ref().unwrap().names.len() == n + 1);
+        assert_eq!(h.state().doc.as_ref().unwrap().active, n);
+        assert!(h.state_mut().active_view().is_some());
+
+        run(&mut h, Cmd::Rename(n, "Notes".into()));
+        settle(&mut h, |app| app.doc.as_ref().unwrap().names[n] == "Notes");
+
+        // Delete the first sheet; a sheet not loaded yet still loads by its file index.
+        run(&mut h, Cmd::DeleteSheet(0));
+        settle(&mut h, |app| app.doc.as_ref().unwrap().names.len() == n);
+        assert_eq!(names(&h)[0], before[1]);
+        run(&mut h, Cmd::Switch(0));
+        settle(&mut h, |app| app.active_view().is_some());
+        assert_eq!(h.state_mut().active_view().unwrap().sheet.name, before[1]);
+
+        // Ctrl+Z brings the deleted sheet back with its values.
+        h.key_press_modifiers(Modifiers::COMMAND, Key::Z);
+        settle(&mut h, |app| {
+            app.doc.as_ref().unwrap().names[0] == before[0]
+        });
+        run(&mut h, Cmd::Switch(0));
+        assert_eq!(value(&mut h, 1, 1), CellValue::Number(120.0));
+    }
+
+    #[test]
+    fn deleting_a_sheet_asks_first() {
+        let mut h = open(demo());
+        let n = names(&h).len();
+        h.state_mut().confirm_delete = Some(1);
+        h.run();
+        h.get_by_label("Cancel").click();
+        h.run();
+        assert_eq!(names(&h).len(), n);
+        h.state_mut().confirm_delete = Some(1);
+        h.run();
+        h.get_by_label("Delete").click();
+        settle(&mut h, |app| app.doc.as_ref().unwrap().names.len() == n - 1);
+    }
+
+    #[test]
+    fn ctrl_plus_minus_and_zero_zoom_the_grid() {
+        let mut h = open(demo());
+        h.run();
+        let w = h.state_mut().active_view().unwrap().grid.col_widths[0];
+        h.key_press_modifiers(Modifiers::COMMAND, Key::Plus);
+        h.run();
+        assert_eq!(h.state().zoom(), 1.1);
+        let zoomed = h.state_mut().active_view().unwrap().grid.col_widths[0];
+        assert!((zoomed - w * 1.1).abs() < 0.01, "{w} -> {zoomed}");
+        h.key_press_modifiers(Modifiers::COMMAND, Key::Minus);
+        h.key_press_modifiers(Modifiers::COMMAND, Key::Minus);
+        h.run();
+        assert_eq!(h.state().zoom(), 0.9);
+        h.get_by_label("90 %").click();
+        h.run();
+        assert_eq!(h.state().zoom(), 1.0);
+        let back = h.state_mut().active_view().unwrap().grid.col_widths[0];
+        assert!((back - w).abs() < 0.01);
+    }
+
+    #[test]
+    fn the_start_screen_lists_recent_files() {
+        let mut h = Harness::builder()
+            .with_size([900.0, 600.0])
+            .build_eframe(|cc| App::new(&cc.egui_ctx, None));
+        h.state_mut().recent.push(&demo());
+        h.run();
+        h.get_by_label("demo.xlsx").click();
+        settle(&mut h, |app| app.active_view().is_some());
+        assert!(h.state().recent.files[0].ends_with("demo.xlsx"));
     }
 
     #[test]

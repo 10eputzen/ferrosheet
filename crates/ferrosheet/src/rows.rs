@@ -9,19 +9,41 @@ use std::collections::BTreeMap;
 pub const ROW_H: f32 = 22.0;
 pub const MIN_ROW_H: f32 = 8.0;
 
-#[derive(Default)]
 pub struct RowHeights {
     custom: BTreeMap<u32, f32>,
+    /// Height of a row nobody resized; `ROW_H` at 100 % zoom.
+    base: f32,
+}
+
+impl Default for RowHeights {
+    fn default() -> Self {
+        RowHeights {
+            custom: BTreeMap::new(),
+            base: ROW_H,
+        }
+    }
 }
 
 impl RowHeights {
+    pub fn base(&self) -> f32 {
+        self.base
+    }
+
+    /// Scales every row by `f` (zooming).
+    pub fn rescale(&mut self, f: f32) {
+        self.base *= f;
+        for h in self.custom.values_mut() {
+            *h *= f;
+        }
+    }
+
     pub fn height(&self, r: u32) -> f32 {
-        self.custom.get(&r).copied().unwrap_or(ROW_H)
+        self.custom.get(&r).copied().unwrap_or(self.base)
     }
 
     pub fn set(&mut self, r: u32, h: f32) {
         let h = h.max(MIN_ROW_H);
-        if (h - ROW_H).abs() < 0.5 {
+        if (h - self.base).abs() < 0.5 {
             self.custom.remove(&r);
         } else {
             self.custom.insert(r, h);
@@ -30,7 +52,12 @@ impl RowHeights {
 
     /// Distance from the top of the sheet to the top of row `r`.
     pub fn top(&self, r: u32) -> f32 {
-        r as f32 * ROW_H + self.custom.range(..r).map(|(_, h)| h - ROW_H).sum::<f32>()
+        r as f32 * self.base
+            + self
+                .custom
+                .range(..r)
+                .map(|(_, h)| h - self.base)
+                .sum::<f32>()
     }
 
     /// Row that contains the vertical position `y` (clamped to the first row).
@@ -38,16 +65,16 @@ impl RowHeights {
         let y = y.max(0.0);
         let mut extra = 0.0;
         for (&k, &h) in &self.custom {
-            let k_top = k as f32 * ROW_H + extra;
+            let k_top = k as f32 * self.base + extra;
             if y < k_top {
                 break;
             }
             if y < k_top + h {
                 return k;
             }
-            extra += h - ROW_H;
+            extra += h - self.base;
         }
-        ((y - extra) / ROW_H) as u32
+        ((y - extra) / self.base) as u32
     }
 }
 

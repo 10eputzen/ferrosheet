@@ -98,6 +98,41 @@ texts! {
     fill_color: "Füllfarbe", "Fill colour";
     no_color: "Keine", "None";
     number_format: "Zahlenformat", "Number format";
+    menu_file: "Datei", "File";
+    menu_edit: "Bearbeiten", "Edit";
+    menu_view: "Ansicht", "View";
+    menu_format: "Format", "Format";
+    recent: "Zuletzt geöffnet", "Recent files";
+    no_recent: "Noch keine Dateien", "No files yet";
+    open_button: "Datei öffnen …", "Open file …";
+    save_as: "Speichern unter …", "Save as …";
+    exit: "Beenden", "Exit";
+    undo: "Rückgängig", "Undo";
+    redo: "Wiederholen", "Redo";
+    cut: "Ausschneiden", "Cut";
+    copy: "Kopieren", "Copy";
+    copy_raw: "Rohwerte kopieren", "Copy raw values";
+    clear_contents: "Inhalte löschen", "Clear contents";
+    find: "Suchen …", "Find …";
+    bold_name: "Fett", "Bold";
+    italic_name: "Kursiv", "Italic";
+    zoom_in: "Vergrößern", "Zoom in";
+    zoom_out: "Verkleinern", "Zoom out";
+    zoom_reset: "Originalgröße (100 %)", "Actual size (100 %)";
+    zoom_hint: "Zoom – klicken für 100 %", "Zoom – click for 100 %";
+    select_column: "Spalte auswählen", "Select column";
+    select_row: "Zeile auswählen", "Select row";
+    fit_width: "Optimale Spaltenbreite", "Autofit column width";
+    fit_height: "Optimale Zeilenhöhe", "Autofit row height";
+    new_sheet: "Neues Blatt", "New sheet";
+    rename_sheet: "Umbenennen", "Rename";
+    delete_sheet: "Blatt löschen", "Delete sheet";
+    delete_sheet_title: "Blatt löschen?", "Delete sheet?";
+    delete: "Löschen", "Delete";
+    sheet_rename_hint: "Doppelklick zum Umbenennen, Rechtsklick für mehr",
+        "Double-click to rename, right-click for more";
+    formulas_loading: "Formeln werden noch geladen …", "Formulas are still loading …";
+    formula_label: "fx", "fx";
     #[cfg(windows)]
     file_type: "Tabelle", "Spreadsheet";
     #[cfg(windows)]
@@ -111,6 +146,32 @@ texts! {
         "ferrosheet is no longer associated with spreadsheets.";
     #[cfg(windows)]
     register_failed: "Verknüpfung fehlgeschlagen", "Association failed";
+}
+
+/// Shortcut shown next to a menu entry, e.g. "Strg+S".
+pub fn shortcut(keys: &str) -> String {
+    match lang() {
+        Lang::De => keys
+            .replace("Ctrl", "Strg")
+            .replace("Shift", "Umschalt")
+            .replace("Del", "Entf"),
+        Lang::En => keys.to_owned(),
+    }
+}
+
+pub fn delete_sheet_question(name: &str) -> String {
+    match lang() {
+        Lang::De => {
+            format!("Blatt „{name}“ mit allen Inhalten löschen? Rückgängig geht mit Strg+Z.")
+        }
+        Lang::En => {
+            format!("Delete sheet \"{name}\" with everything on it? Ctrl+Z brings it back.")
+        }
+    }
+}
+
+pub fn zoom_percent(zoom: f32) -> String {
+    format!("{} %", (zoom * 100.0).round() as u32)
 }
 
 pub fn cannot_edit(reason: &str) -> String {

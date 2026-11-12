@@ -95,9 +95,13 @@ cargo install --path crates/ferrosheet
 | Ctrl+Shift+C | Copy raw values (dot as decimal separator, ISO dates) |
 | Ctrl+F, F3, Shift+F3, Esc | Search, next hit, previous hit, close |
 | Ctrl+Page Up / Page Down | Previous / next sheet |
+| Ctrl+X | Cut (copy, then empty the cells) |
+| Ctrl+Plus, Ctrl+Minus, Ctrl+0, Ctrl+wheel | Zoom the grid in, out, back to 100 % |
 
 Mouse: click a column or row header to select it, drag a header edge to resize,
-double-click an edge to fit.
+double-click an edge to fit. Right-click cells or headers for the usual menu.
+Sheet tabs: "+" adds a sheet, double-click renames, right-click renames or deletes.
+Everything is also in the menu bar (File, Edit, View, Format).
 
 ## How it is built
 

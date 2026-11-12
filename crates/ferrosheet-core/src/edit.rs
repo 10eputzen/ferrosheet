@@ -71,9 +71,9 @@ type Formulas = HashMap<(u32, u32), String>;
 pub struct EditSession {
     model: UserModel<'static>,
     locale: Locale,
-    /// Per sheet: cells with a formula plus every cell changed here. After any change
+    /// Per sheet id: cells with a formula plus every cell changed here. After any change
     /// these are the only cells whose shown value can differ from the model.
-    watched: Vec<BTreeSet<(u32, u32)>>,
+    watched: HashMap<u32, BTreeSet<(u32, u32)>>,
 }
 
 fn locale_id(locale: Locale) -> &'static str {
@@ -148,11 +148,13 @@ impl EditSession {
             .worksheets
             .iter()
             .map(|ws| {
-                ws.sheet_data
+                let cells = ws
+                    .sheet_data
                     .cells()
                     .filter(|(_, _, cell)| cell.has_formula())
                     .map(|(r, c, _)| (r as u32 - 1, c as u32 - 1))
-                    .collect()
+                    .collect();
+                (ws.sheet_id, cells)
             })
             .collect();
         EditSession {
@@ -164,6 +166,63 @@ impl EditSession {
 
     pub fn sheet_names(&self) -> Vec<String> {
         self.model.get_model().workbook.get_worksheet_names()
+    }
+
+    /// Stable ids of the sheets in order; they survive renames, moves and undo.
+    pub fn sheet_ids(&self) -> Vec<u32> {
+        let ws = &self.model.get_model().workbook.worksheets;
+        ws.iter().map(|w| w.sheet_id).collect()
+    }
+
+    fn sheet_id(&self, sheet: usize) -> Option<u32> {
+        let ws = &self.model.get_model().workbook.worksheets;
+        ws.get(sheet).map(|w| w.sheet_id)
+    }
+
+    /// Appends an empty sheet with a free name ("Sheet2", …).
+    pub fn add_sheet(&mut self) -> Result<(), String> {
+        self.model.new_sheet()
+    }
+
+    pub fn rename_sheet(&mut self, sheet: usize, name: &str) -> Result<(), String> {
+        let name = name.trim();
+        if name.is_empty() {
+            return Err("empty sheet name".into());
+        }
+        self.model.rename_sheet(sheet as u32, name)
+    }
+
+    pub fn delete_sheet(&mut self, sheet: usize) -> Result<(), String> {
+        if self.sheet_ids().len() <= 1 {
+            return Err("a workbook needs at least one sheet".into());
+        }
+        self.model.delete_sheet(sheet as u32)
+    }
+
+    /// The whole sheet as the model has it, for sheets the viewer never loaded (a new
+    /// one, or one brought back by undo).
+    pub fn snapshot(&self, sheet: usize) -> (Sheet, Formulas) {
+        let model = self.model.get_model();
+        let names = self.sheet_names();
+        let name = names.get(sheet).cloned().unwrap_or_default();
+        let mut out = Sheet::from_cells(name, 0, 0, Vec::new(), self.locale);
+        let mut formulas = HashMap::new();
+        let Some(ws) = model.workbook.worksheets.get(sheet) else {
+            return (out, formulas);
+        };
+        let cells: Vec<_> = ws
+            .sheet_data
+            .cells()
+            .map(|(r, c, _)| (r as u32 - 1, c as u32 - 1))
+            .collect();
+        for (r, c) in cells {
+            let u = self.cell(sheet, r, c);
+            out.set(r, c, u.value, u.formatted, u.style);
+            if let Some(f) = self.formula(sheet, r, c) {
+                formulas.insert((r, c), f);
+            }
+        }
+        (out, formulas)
     }
 
     /// Sets a cell from what the user typed: a number (in the UI language), text or
@@ -204,7 +263,11 @@ impl EditSession {
     }
 
     fn watch(&mut self, sheet: usize, r0: u32, c0: u32, r1: u32, c1: u32) {
-        if let Some(w) = self.watched.get_mut(sheet) {
+        let Some(id) = self.sheet_id(sheet) else {
+            return;
+        };
+        {
+            let w = self.watched.entry(id).or_default();
             for r in r0..=r1 {
                 for c in c0..=c1 {
                     w.insert((r, c));
@@ -261,7 +324,7 @@ impl EditSession {
 
     /// The current state of every cell that may have changed in `sheet`.
     pub fn updates(&self, sheet: usize) -> Vec<CellUpdate> {
-        let Some(watched) = self.watched.get(sheet) else {
+        let Some(watched) = self.sheet_id(sheet).and_then(|id| self.watched.get(&id)) else {
             return Vec::new();
         };
         watched
@@ -305,7 +368,7 @@ impl EditSession {
 
     /// Formulas of the watched cells of `sheet`, starting with `=`.
     pub fn formulas(&self, sheet: usize) -> HashMap<(u32, u32), String> {
-        let Some(watched) = self.watched.get(sheet) else {
+        let Some(watched) = self.sheet_id(sheet).and_then(|id| self.watched.get(&id)) else {
             return HashMap::new();
         };
         watched
@@ -477,6 +540,46 @@ mod tests {
         let reread = back.load_sheet(0).unwrap();
         assert_eq!(reread.display(0, 0), "edited");
         assert_eq!(reread.rows, sheet.rows.max(1));
+    }
+
+    #[test]
+    fn sheets_can_be_added_renamed_and_deleted_and_undo_brings_them_back() {
+        let mut s = EditSession::open_xlsx(&demo(), Locale::German).unwrap();
+        let n = s.sheet_names().len();
+        let first = s.sheet_names()[0].clone();
+        s.add_sheet().unwrap();
+        assert_eq!(s.sheet_names().len(), n + 1);
+        s.rename_sheet(n, "  Neu ").unwrap();
+        assert_eq!(s.sheet_names()[n], "Neu");
+        assert!(s.rename_sheet(n, "   ").is_err());
+        s.set_input(n, 0, 0, "=1+2").unwrap();
+        assert_eq!(find(&s.updates(n), 0, 0).value, CellValue::Number(3.0));
+
+        let id = s.sheet_ids()[0];
+        let (before, formulas) = s.snapshot(0);
+        s.delete_sheet(0).unwrap();
+        assert_eq!(s.sheet_names().len(), n);
+        assert!(!s.sheet_ids().contains(&id));
+        assert!(s.undo());
+        assert_eq!(s.sheet_names()[0], first);
+        let (after, again) = s.snapshot(0);
+        assert_eq!((after.rows, after.cols), (before.rows, before.cols));
+        assert_eq!(after.display(1, 1), before.display(1, 1));
+        assert_eq!(again, formulas);
+        assert!(!formulas.is_empty());
+    }
+
+    #[test]
+    fn the_last_sheet_cannot_be_deleted() {
+        let sheet = Sheet::from_cells(
+            "A".into(),
+            1,
+            1,
+            vec![CellValue::Number(1.0)],
+            Locale::German,
+        );
+        let mut s = EditSession::from_sheets(&[(&sheet, &HashMap::new())], Locale::German).unwrap();
+        assert!(s.delete_sheet(0).is_err());
     }
 
     #[test]
