@@ -98,7 +98,7 @@ cargo test --workspace
 - Robustness tests that truncate and corrupt every fixture and assert the reader never panics
 - UI tests with [egui_kittest](https://github.com/emilk/egui/tree/main/crates/egui_kittest) that
   drive the whole app: open a workbook, press keys, copy, search, switch sheets, resize columns
-- CI runs format, clippy and tests on Windows and Linux and reports test coverage
+- CI runs format, clippy and tests on Windows and Linux on every push; test coverage is measured weekly
 
 ## License
 

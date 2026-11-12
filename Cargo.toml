@@ -22,3 +22,12 @@ strip = true
 # Fast iteration but quick enough to judge scrolling in debug builds
 [profile.dev.package."*"]
 opt-level = 2
+
+# CI: tests only, so no optimised dependencies and no debug info – far less to compile.
+[profile.ci]
+inherits = "dev"
+debug = false
+incremental = false
+
+[profile.ci.package."*"]
+opt-level = 0
