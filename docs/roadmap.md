@@ -24,6 +24,21 @@ almost no changes. The work is packaging.
 Decision: ship Linux and macOS unsigned together with the phase 1 release and explain the
 first start in the README. Sign once the project is public and has users.
 
+## Auto-update (before going public)
+
+Silent, like Chrome or VS Code – no prompt, no click. Effort ~1–1½ days.
+
+1. A few seconds after start (never blocking it), at most once a day, check the latest
+   GitHub release.
+2. Download the asset for the current platform in the background.
+3. Verify the signature (own ed25519 key, public key compiled in); discard anything that fails.
+4. Swap in the new binary on the next start; show "Updated to x.y.z" with a "What's new" link.
+5. Keep the previous binary; if the new one fails to start, fall back automatically.
+6. Opt-out in the settings; a beta channel can come later.
+
+Needs a public repo (release assets of a private repo are not downloadable without a token).
+Package managers (winget, Flathub/AppImage, Homebrew) come on top once the project is public.
+
 ## Phase 2 – write
 
 Edit cells, save as `.xlsx` only, formatting is not preserved. See [feature parity](feature-parity.md).
