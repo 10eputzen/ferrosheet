@@ -41,7 +41,7 @@ Measured on a desktop PC with Windows 11, release build:
 | Window visible | < 300 ms |
 | Open a 100 000 × 30 `.xlsx` (11.7 MB): first rows / whole sheet | 11 ms / 0.73 s |
 | Search 3 million cells | 45 ms (index built in the background after loading) |
-| Download size | single 6.9 MB `.exe`, no installer |
+| Download size | single 8 MB `.exe`, no installer |
 
 Reproduce with `cargo run --release -p ferrosheet-core --example gen_big` and
 `cargo run --release -p ferrosheet-core --example bench_load -- target/big.xlsx`.
@@ -59,8 +59,9 @@ Download the latest build from [Releases](https://github.com/10eputzen/ferroshee
 - **macOS:** not yet, see the [roadmap](docs/roadmap.md#platforms).
 
 **Updates:** at start ferrosheet asks GitHub for the latest release tag, in the background and
-nothing else is sent. If there is a newer version, the status bar offers it; one click
-downloads it, replaces the exe and reopens the current file. Set `FERROSHEET_NO_UPDATE=1` to
+nothing else is sent. If there is a newer version, it is downloaded in the background too, and only
+then the status bar offers a restart. The restart is instant and comes back with the same
+window, file and sheet; without it, the next start picks up the new version. Set `FERROSHEET_NO_UPDATE=1` to
 turn the check off. Needs Windows 11 or a Linux with `curl` and `tar`.
 
 From source, with Rust installed:

@@ -1,10 +1,17 @@
-//! Self-update from the GitHub releases. At start a background thread asks GitHub for
-//! the latest release tag (the only thing sent is that request). If it is newer, the
-//! status bar offers the update; one click downloads the release archive, swaps the
-//! running executable and restarts it. Uses the `curl` and `tar` that ship with
-//! Windows 11 and every Linux desktop, so no HTTP or archive code is linked in.
-//! `FERROSHEET_NO_UPDATE` turns the check off; debug builds never check.
+//! Self-update from the GitHub releases, done the way browsers do it:
+//!
+//! 1. At start a background thread asks GitHub for the latest release tag (the only
+//!    thing sent). If it is newer, the same thread downloads the release right away and
+//!    leaves the new executable next to the running one as `ferrosheet.new(.exe)`.
+//! 2. Only then the status bar offers "restart". The click swaps the files (two renames,
+//!    instant) and starts the new version with the same window, file and sheet.
+//! 3. Without the click the next start swaps the files before opening the window.
+//!
+//! Uses the `curl` and `tar` that ship with Windows 11 and every Linux desktop, so no
+//! HTTP or archive code is linked in. `FERROSHEET_NO_UPDATE` turns the check off; debug
+//! builds never check.
 
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::mpsc::{self, Receiver};
@@ -23,7 +30,54 @@ const ARCHIVE: &str = "tar.gz";
 #[cfg(not(windows))]
 const BIN: &str = "ferrosheet";
 
-/// Starts the check in the background; the receiver yields the newer version, if any.
+/// The command-line flag that carries [`Restore`] to the restarted process.
+const RESTORE_FLAG: &str = "--restore=";
+
+/// Window and sheet to bring back after an update restart.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Restore {
+    pub pos: [f32; 2],
+    pub size: [f32; 2],
+    pub maximized: bool,
+    pub sheet: usize,
+}
+
+impl Restore {
+    fn to_arg(self) -> String {
+        let [x, y] = self.pos;
+        let [w, h] = self.size;
+        let m = u8::from(self.maximized);
+        format!("{RESTORE_FLAG}{x},{y},{w},{h},{m},{}", self.sheet)
+    }
+
+    fn parse(arg: &str) -> Option<Self> {
+        let mut v = arg.strip_prefix(RESTORE_FLAG)?.split(',');
+        let mut f = || v.next()?.parse::<f32>().ok();
+        let (x, y, w, h, m, sheet) = (f()?, f()?, f()?, f()?, f()?, f()?);
+        Some(Restore {
+            pos: [x, y],
+            size: [w, h],
+            maximized: m != 0.0,
+            sheet: sheet as usize,
+        })
+    }
+}
+
+/// Splits the command line into the restore state (if this is an update restart) and
+/// the remaining arguments.
+pub fn take_restore(mut args: Vec<OsString>) -> (Option<Restore>, Vec<OsString>) {
+    let restore = args
+        .first()
+        .and_then(|a| a.to_str())
+        .and_then(Restore::parse);
+    if restore.is_some() {
+        args.remove(0);
+    }
+    (restore, args)
+}
+
+/// Starts the check and download in the background; the receiver yields the version
+/// once it is downloaded and ready to swap in.
 pub fn check(ctx: eframe::egui::Context) -> Option<Receiver<String>> {
     if cfg!(debug_assertions) || std::env::var_os("FERROSHEET_NO_UPDATE").is_some() {
         return None;
@@ -38,49 +92,50 @@ pub fn check(ctx: eframe::egui::Context) -> Option<Receiver<String>> {
             return;
         };
         let json = String::from_utf8_lossy(&out.stdout);
-        if let Some(tag) = tag_name(&json)
-            && is_newer(tag, env!("CARGO_PKG_VERSION"))
-        {
-            let _ = tx.send(tag.trim_start_matches('v').to_owned());
+        let Some(tag) = tag_name(&json) else { return };
+        if !is_newer(tag, env!("CARGO_PKG_VERSION")) {
+            return;
+        }
+        let version = tag.trim_start_matches('v');
+        // A failed download stays silent: the next start simply tries again.
+        if download(version).is_ok() {
+            let _ = tx.send(version.to_owned());
             ctx.request_repaint();
         }
     });
     Some(rx)
 }
 
-/// Downloads `version` and puts it in place of the running executable.
-pub fn install(version: &str) -> Result<(), String> {
+/// Swaps in a downloaded update and starts it with `args`. The caller then closes.
+pub fn restart(args: &[OsString], restore: Option<Restore>) -> Result<(), String> {
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
-    // Staged next to the exe, not in the shared temp dir: that folder has to be
-    // writable for the swap anyway, and other users cannot plant files in it.
-    let parent = exe.parent().ok_or("no folder for the executable")?;
-    let dir = parent.join(format!(".ferrosheet-update-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir(&dir).map_err(|e| e.to_string())?;
-    let result = download_and_swap(version, &exe, &dir);
-    let _ = std::fs::remove_dir_all(&dir);
-    result
-}
-
-fn download_and_swap(version: &str, exe: &Path, dir: &Path) -> Result<(), String> {
-    let archive = dir.join(format!("{ASSET}.{ARCHIVE}"));
-    let url = format!("https://github.com/{REPO}/releases/download/v{version}/{ASSET}.{ARCHIVE}");
-    run(cmd("curl")
-        .args(["-fsSL", "--max-time", "300", "-o"])
-        .arg(&archive)
-        .arg(&url))?;
-    run(cmd("tar").arg("-xf").arg(&archive).arg("-C").arg(dir))?;
-    swap(exe, &dir.join(ASSET).join(BIN)).map_err(|e| e.to_string())
-}
-
-/// Starts the (new) executable with the file that is open now.
-pub fn restart(file: Option<&Path>) -> Result<(), String> {
-    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
-    let mut c = Command::new(exe);
-    if let Some(f) = file {
-        c.arg(f);
+    let pending = pending_path(&exe);
+    if pending.exists() {
+        swap(&exe, &pending).map_err(|e| e.to_string())?;
     }
-    c.spawn().map(drop).map_err(|e| e.to_string())
+    let mut c = Command::new(exe);
+    if let Some(r) = restore {
+        c.arg(r.to_arg());
+    }
+    c.args(args).spawn().map(drop).map_err(|e| e.to_string())
+}
+
+/// At start: if an update is waiting, swap it in and start it instead. Returns true
+/// when the new version was started and this process should end.
+pub fn apply_pending(args: &[OsString]) -> bool {
+    let Ok(exe) = std::env::current_exe() else {
+        return false;
+    };
+    let pending = pending_path(&exe);
+    if !pending.exists() {
+        return false;
+    }
+    if swap(&exe, &pending).is_err() {
+        // Do not try again on every start; the next check downloads it anew.
+        let _ = std::fs::remove_file(&pending);
+        return false;
+    }
+    Command::new(exe).args(args).spawn().is_ok()
 }
 
 /// Removes the executable a previous update left behind. On Windows the old process
@@ -103,19 +158,45 @@ pub fn clean_up() {
     });
 }
 
+/// Downloads `version` and leaves its executable next to the running one.
+fn download(version: &str) -> Result<(), String> {
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    // Staged next to the exe, not in the shared temp dir: that folder has to be
+    // writable for the swap anyway, and other users cannot plant files in it.
+    let parent = exe.parent().ok_or("no folder for the executable")?;
+    let dir = parent.join(format!(".ferrosheet-update-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir(&dir).map_err(|e| e.to_string())?;
+    let result = download_into(version, &dir, &pending_path(&exe));
+    let _ = std::fs::remove_dir_all(&dir);
+    result
+}
+
+fn download_into(version: &str, dir: &Path, pending: &Path) -> Result<(), String> {
+    let archive = dir.join(format!("{ASSET}.{ARCHIVE}"));
+    let url = format!("https://github.com/{REPO}/releases/download/v{version}/{ASSET}.{ARCHIVE}");
+    run(cmd("curl")
+        .args(["-fsSL", "--max-time", "300", "-o"])
+        .arg(&archive)
+        .arg(&url))?;
+    run(cmd("tar").arg("-xf").arg(&archive).arg("-C").arg(dir))?;
+    // Moved in one step, so a half-finished download never looks like an update.
+    std::fs::rename(dir.join(ASSET).join(BIN), pending).map_err(|e| e.to_string())
+}
+
 /// A running executable cannot be overwritten on Windows, but it can be renamed:
-/// move it aside, copy the new one in, and undo the rename if the copy fails.
+/// move it aside, move the new one in, and undo the first rename if the second fails.
 fn swap(exe: &Path, new: &Path) -> std::io::Result<()> {
     if !new.is_file() {
         return Err(std::io::Error::new(
             std::io::ErrorKind::NotFound,
-            format!("{} missing in the release", new.display()),
+            format!("{} missing", new.display()),
         ));
     }
     let old = old_path(exe);
     let _ = std::fs::remove_file(&old);
     std::fs::rename(exe, &old)?;
-    if let Err(e) = std::fs::copy(new, exe) {
+    if let Err(e) = std::fs::rename(new, exe) {
         let _ = std::fs::rename(&old, exe);
         return Err(e);
     }
@@ -123,10 +204,19 @@ fn swap(exe: &Path, new: &Path) -> std::io::Result<()> {
 }
 
 fn old_path(exe: &Path) -> PathBuf {
+    sibling(exe, "old")
+}
+
+fn pending_path(exe: &Path) -> PathBuf {
+    sibling(exe, "new")
+}
+
+/// `ferrosheet.exe` → `ferrosheet.<tag>.exe`, `ferrosheet` → `ferrosheet.<tag>`.
+fn sibling(exe: &Path, tag: &str) -> PathBuf {
     let stem = exe.file_stem().unwrap_or_default().to_string_lossy();
     let name = match exe.extension() {
-        Some(ext) => format!("{stem}.old.{}", ext.to_string_lossy()),
-        None => format!("{stem}.old"),
+        Some(ext) => format!("{stem}.{tag}.{}", ext.to_string_lossy()),
+        None => format!("{stem}.{tag}"),
     };
     exe.with_file_name(name)
 }
@@ -206,18 +296,35 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let exe = dir.join("ferrosheet.exe");
-        let new = dir.join("new.exe");
+        let new = pending_path(&exe);
         std::fs::write(&exe, "old").unwrap();
         std::fs::write(&new, "new").unwrap();
 
         swap(&exe, &new).unwrap();
         assert_eq!(std::fs::read_to_string(&exe).unwrap(), "new");
-        let old = dir.join("ferrosheet.old.exe");
-        assert_eq!(std::fs::read_to_string(&old).unwrap(), "old");
+        assert_eq!(std::fs::read_to_string(old_path(&exe)).unwrap(), "old");
+        assert!(!new.exists());
 
-        // a release without the binary leaves everything as it was
-        assert!(swap(&exe, &dir.join("missing")).is_err());
+        // nothing downloaded: everything stays as it was
+        assert!(swap(&exe, &new).is_err());
         assert_eq!(std::fs::read_to_string(&exe).unwrap(), "new");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn restore_state_survives_the_command_line() {
+        let r = Restore {
+            pos: [-1912.0, 34.5],
+            size: [1200.0, 800.0],
+            maximized: true,
+            sheet: 2,
+        };
+        let args = vec![OsString::from(r.to_arg()), OsString::from("C:/a b/x.xlsx")];
+        let (back, rest) = take_restore(args);
+        assert_eq!(back, Some(r));
+        assert_eq!(rest, [OsString::from("C:/a b/x.xlsx")]);
+
+        let plain = vec![OsString::from("x.xlsx")];
+        assert_eq!(take_restore(plain.clone()), (None, plain));
     }
 }

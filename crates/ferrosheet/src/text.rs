@@ -70,7 +70,6 @@ texts! {
     prev_hit: "Vorheriger Treffer (Umschalt+F3)", "Previous match (Shift+F3)";
     next_hit: "Nächster Treffer (F3)", "Next match (F3)";
     close_search: "Suche schließen (Esc)", "Close search (Esc)";
-    updating: "Aktualisiere …", "Updating …";
     update_failed: "Aktualisierung fehlgeschlagen", "Update failed";
     #[cfg(windows)]
     file_type: "Tabelle", "Spreadsheet";
@@ -94,10 +93,10 @@ pub fn hit_counter(current: usize, total: usize) -> String {
     }
 }
 
-pub fn update_available(version: &str) -> String {
+pub fn update_ready(version: &str) -> String {
     match lang() {
-        Lang::De => format!("Version {version} verfügbar – jetzt aktualisieren"),
-        Lang::En => format!("Version {version} available – update now"),
+        Lang::De => format!("Version {version} bereit – neu starten"),
+        Lang::En => format!("Version {version} ready – restart"),
     }
 }
 

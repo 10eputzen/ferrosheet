@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::mpsc::{self, Receiver, TryRecvError};
+use std::sync::mpsc::{Receiver, TryRecvError};
 
 use eframe::egui::{self, Event, Key, Modifiers, ViewportCommand};
 use ferrosheet_core::{
@@ -49,9 +49,10 @@ struct Search {
 enum Update {
     #[default]
     None,
-    Checking(Receiver<String>),
-    Available(String),
-    Installing(Receiver<Result<(), String>>),
+    /// Checking GitHub and downloading in the background.
+    Downloading(Receiver<String>),
+    /// Downloaded; a restart swaps it in.
+    Ready(String),
 }
 
 #[derive(Default)]
@@ -63,13 +64,20 @@ pub struct App {
     search: Search,
     status: Option<(String, f64)>,
     update: Update,
+    /// Sheet to show once the file is open (after an update restart).
+    restore_sheet: Option<usize>,
 }
 
 impl App {
+    /// Shows sheet `idx` once the file is open.
+    pub fn restore_sheet(&mut self, idx: usize) {
+        self.restore_sheet = Some(idx);
+    }
+
     pub fn new(ctx: &egui::Context, path: Option<PathBuf>) -> Self {
         let mut app = App::default();
         if let Some(rx) = update::check(ctx.clone()) {
-            app.update = Update::Checking(rx);
+            app.update = Update::Downloading(rx);
         }
         if let Some(p) = path {
             app.open(ctx, p);
@@ -140,6 +148,12 @@ impl App {
                 LoadMsg::Opened { names } => {
                     doc.sheets = names.iter().map(|_| None).collect();
                     doc.names = names;
+                    if let Some(i) = self.restore_sheet.take()
+                        && i < doc.names.len()
+                    {
+                        doc.active = i;
+                        doc.loader.request_sheet(i);
+                    }
                 }
                 LoadMsg::Sheet { idx, sheet } => {
                     // A big sheet arrives twice: first a preview of its top rows, then
@@ -488,17 +502,9 @@ impl App {
                     self.switch_sheet(i);
                 }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    match &self.update {
-                        Update::Available(v) => {
-                            start_update = ui.link(text::update_available(v)).clicked();
-                            ui.separator();
-                        }
-                        Update::Installing(_) => {
-                            ui.weak(text::updating());
-                            ui.spinner();
-                            ui.separator();
-                        }
-                        _ => {}
+                    if let Update::Ready(v) = &self.update {
+                        start_update = ui.link(text::update_ready(v)).clicked();
+                        ui.separator();
                     }
                     match &self.status {
                         Some((msg, t)) if now - t < STATUS_SECS => {
@@ -521,51 +527,43 @@ impl App {
             });
         });
         if start_update {
-            self.start_update(ui.ctx());
+            self.restart_for_update(&ui.ctx().clone());
         }
     }
 
-    fn poll_update(&mut self, ctx: &egui::Context) {
-        let result = match &self.update {
-            Update::Checking(rx) => match rx.try_recv() {
-                Ok(v) => Some(Update::Available(v)),
-                Err(TryRecvError::Disconnected) => Some(Update::None),
-                Err(TryRecvError::Empty) => None,
-            },
-            Update::Installing(rx) => match rx.try_recv() {
-                Ok(Ok(())) => {
-                    let file = self.doc.as_ref().map(|d| d.path.as_path());
-                    match update::restart(file) {
-                        Ok(()) => ctx.send_viewport_cmd(ViewportCommand::Close),
-                        Err(e) => self.update_failed(e),
-                    }
-                    Some(Update::None)
-                }
-                Ok(Err(e)) => {
-                    self.update_failed(e);
-                    Some(Update::None)
-                }
-                Err(TryRecvError::Disconnected) => Some(Update::None),
-                Err(TryRecvError::Empty) => None,
-            },
-            _ => None,
-        };
-        if let Some(u) = result {
-            self.update = u;
+    fn poll_update(&mut self) {
+        if let Update::Downloading(rx) = &self.update {
+            match rx.try_recv() {
+                Ok(v) => self.update = Update::Ready(v),
+                Err(TryRecvError::Disconnected) => self.update = Update::None,
+                Err(TryRecvError::Empty) => {}
+            }
         }
     }
 
-    fn start_update(&mut self, ctx: &egui::Context) {
-        let Update::Available(v) = &self.update else {
-            return;
-        };
-        let (tx, rx) = mpsc::channel();
-        let (v, ctx) = (v.clone(), ctx.clone());
-        std::thread::spawn(move || {
-            let _ = tx.send(update::install(&v));
-            ctx.request_repaint();
+    /// Swaps in the downloaded version and starts it with the same window, file and
+    /// sheet; this process then closes. Feels like a reload.
+    fn restart_for_update(&mut self, ctx: &egui::Context) {
+        let restore = ctx.input(|i| {
+            let vp = i.viewport();
+            let inner = vp.inner_rect?;
+            Some(update::Restore {
+                pos: vp.outer_rect.unwrap_or(inner).min.into(),
+                size: inner.size().into(),
+                maximized: vp.maximized.unwrap_or(false),
+                sheet: self.doc.as_ref().map_or(0, |d| d.active),
+            })
         });
-        self.update = Update::Installing(rx);
+        let args: Vec<_> = self
+            .doc
+            .iter()
+            .map(|d| d.path.clone().into_os_string())
+            .collect();
+        match update::restart(&args, restore) {
+            Ok(()) => ctx.send_viewport_cmd(ViewportCommand::Close),
+            Err(e) => self.update_failed(e),
+        }
+        self.update = Update::None;
     }
 
     fn update_failed(&mut self, e: String) {
@@ -595,7 +593,7 @@ impl eframe::App for App {
         #[cfg(feature = "screenshot")]
         screenshot(&ctx);
         self.receive(&ctx);
-        self.poll_update(&ctx);
+        self.poll_update();
 
         let dropped = ctx.input(|i| i.raw.dropped_files.first().map(|f| f.path().to_path_buf()));
         if let Some(p) = dropped {
