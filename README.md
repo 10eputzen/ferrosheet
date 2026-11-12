@@ -1,7 +1,7 @@
 # ferrosheet
 
-A fast, lightweight spreadsheet viewer written in Rust. Opens `.xls`, `.xlsx`, `.xlsm`, `.xlsb`
-and `.ods`, shows them in under a second and gets out of the way.
+A fast, lightweight spreadsheet viewer written in Rust. Opens `.xls`, `.xlsx`, `.xlsm`, `.xlsb`,
+`.ods` and `.csv`, shows them in under a second and gets out of the way.
 
 <picture>
   <source media="(prefers-color-scheme: light)" srcset="docs/screenshot-light.png">
@@ -18,6 +18,8 @@ question was: why not port that small piece to Rust?
 ## What it does
 
 - Opens xls, xlsx, xlsm, xlsb and ods, including multiple sheets
+- Opens csv and tsv without questions: delimiter, encoding and decimal separator are
+  detected; numbers become numbers, while postcodes, IDs and dates stay exactly as written
 - Numbers, text, dates, durations, booleans and error values; formulas show their stored
   result in the cell and the formula itself in the formula bar
 - Search across the current sheet or all sheets

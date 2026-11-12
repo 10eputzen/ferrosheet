@@ -1,6 +1,7 @@
 //! Core of ferrosheet: loading spreadsheets into a display-ready model,
 //! selection and clipboard text, and search. No GUI dependencies.
 
+mod csv;
 mod search;
 mod selection;
 mod sheet;

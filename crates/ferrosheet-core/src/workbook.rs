@@ -15,7 +15,7 @@ use chrono::NaiveDate;
 use crate::{CellError, CellValue, Locale, Sheet};
 
 /// File extensions ferrosheet can open.
-pub const EXTENSIONS: &[&str] = &["xls", "xlsx", "xlsm", "xlsb", "ods"];
+pub const EXTENSIONS: &[&str] = &["xls", "xlsx", "xlsm", "xlsb", "ods", "csv", "tsv"];
 
 /// Why a file or sheet could not be loaded.
 #[derive(Debug)]
@@ -53,7 +53,21 @@ pub struct Workbook {
     pub sheet_names: Vec<String>,
     /// How loaded sheets render their values.
     pub locale: Locale,
-    inner: Sheets<BufReader<File>>,
+    inner: Inner,
+}
+
+// One per open file, so boxing the big variant would buy nothing.
+#[allow(clippy::large_enum_variant)]
+enum Inner {
+    Calamine(Sheets<BufReader<File>>),
+    /// Delimited text: one sheet, parsed when it is loaded.
+    Text(String),
+}
+
+fn is_text_file(path: &Path) -> bool {
+    path.extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| e.eq_ignore_ascii_case("csv") || e.eq_ignore_ascii_case("tsv"))
 }
 
 impl Workbook {
@@ -64,19 +78,41 @@ impl Workbook {
                 path.display().to_string(),
             )));
         }
+        if is_text_file(path) {
+            let text = crate::csv::decode(std::fs::read(path).map_err(LoadError::Io)?);
+            let name = path.file_stem().unwrap_or_default().to_string_lossy();
+            return Ok(Workbook {
+                path: path.to_path_buf(),
+                sheet_names: vec![name.into_owned()],
+                locale,
+                inner: Inner::Text(text),
+            });
+        }
         let inner = guard(|| Ok(open_workbook_auto(path)?))?;
         Ok(Workbook {
             path: path.to_path_buf(),
             sheet_names: inner.sheet_names(),
             locale,
-            inner,
+            inner: Inner::Calamine(inner),
         })
     }
 
     /// Reads sheet `idx` and converts it into a display-ready [`Sheet`].
     pub fn load_sheet(&mut self, idx: usize) -> Result<Sheet, LoadError> {
         let name = self.sheet_name(idx)?;
-        let inner = &mut self.inner;
+        let inner = match &mut self.inner {
+            Inner::Calamine(inner) => inner,
+            Inner::Text(text) => {
+                let t = crate::csv::parse(text).map_err(LoadError::Format)?;
+                return Ok(Sheet::from_cells(
+                    name,
+                    t.rows,
+                    t.cols,
+                    t.cells,
+                    self.locale,
+                ));
+            }
+        };
         let range = guard(|| {
             Ok(inner
                 .worksheet_range_at(idx)
@@ -105,7 +141,7 @@ impl Workbook {
     ) -> Result<Sheet, LoadError> {
         let name = self.sheet_name(idx)?;
         let locale = self.locale;
-        let Sheets::Xlsx(xlsx) = &mut self.inner else {
+        let Inner::Calamine(Sheets::Xlsx(xlsx)) = &mut self.inner else {
             return self.load_sheet(idx);
         };
         let streamed = guard(|| {
@@ -159,7 +195,9 @@ impl Workbook {
     /// Formulas of sheet `idx`, keyed by `(row, col)`, always starting with `=`.
     pub fn load_formulas(&mut self, idx: usize) -> Result<HashMap<(u32, u32), String>, LoadError> {
         let name = self.sheet_name(idx)?;
-        let inner = &mut self.inner;
+        let Inner::Calamine(inner) = &mut self.inner else {
+            return Ok(HashMap::new());
+        };
         let range = guard(|| Ok(inner.worksheet_formula(&name)?))?;
         let Some((r0, c0)) = range.start() else {
             return Ok(HashMap::new());

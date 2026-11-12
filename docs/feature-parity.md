@@ -6,7 +6,7 @@ so nobody expects an office suite. ✅ done · 🟡 planned · ❌ out of scope
 | Area | LibreOffice Calc | ferrosheet |
 | --- | --- | --- |
 | **Open** xls, xlsx, xlsm, xlsb, ods | ✅ | ✅ |
-| Open csv | ✅ | ❌ (any text editor does it) |
+| Open csv, tsv | ✅ (import dialog) | ✅ delimiter, encoding and decimals detected, no dialog; codes with leading zeros stay text |
 | Start-up and load time | seconds | ✅ window < 300 ms, 100k×30 cells: first rows after 11 ms, all in ~0.7 s |
 | Install size | ~350 MB | ✅ single 8 MB exe |
 | Multiple sheets, switch with Ctrl+PgUp/PgDn | ✅ | ✅ |

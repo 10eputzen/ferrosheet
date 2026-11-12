@@ -172,3 +172,17 @@ fn big_xlsx_sends_a_preview_of_the_first_rows_then_the_whole_sheet() {
     small.load_sheet_with_preview(0, |_| called = true).unwrap();
     assert!(!called);
 }
+
+#[test]
+fn csv_opens_as_one_sheet_named_after_the_file() {
+    let path = tmp("Umsätze 2026.csv");
+    // Windows-1252, as Excel saves "CSV (Trennzeichen-getrennt)" on a German system.
+    std::fs::write(&path, b"Kunde;Betrag\r\nM\xFCller;1.234,50\r\n").unwrap();
+    let mut wb = Workbook::open(&path, Locale::German).unwrap();
+    assert_eq!(wb.sheet_names, ["Umsätze 2026"]);
+    let s = wb.load_sheet_with_preview(0, |_| {}).unwrap();
+    assert_eq!((s.rows, s.cols), (2, 2));
+    assert_eq!(s.display(1, 0), "Müller");
+    assert!(s.value(1, 1).is_numeric());
+    assert!(wb.load_formulas(0).unwrap().is_empty());
+}
