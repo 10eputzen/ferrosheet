@@ -12,7 +12,7 @@ so nobody expects an office suite. ✅ done · 🟡 planned · ❌ out of scope
 | Multiple sheets, switch with Ctrl+PgUp/PgDn | ✅ | ✅ |
 | Cell values: numbers, text, dates, durations, booleans, errors | ✅ | ✅ |
 | Formulas: show the formula of a cell | ✅ | ✅ (formula bar) |
-| Formulas: recalculate | ✅ | ❌ cached values from the file are shown |
+| Formulas: recalculate | ✅ | 🟡 phase 2 via IronCalc; phase 1 shows the results stored in the file |
 | Search, case-insensitive, current or all sheets | ✅ | ✅ |
 | Search with regex, replace | ✅ | ❌ / 🟡 replace with phase 2 |
 | Select cells, rows, columns, all | ✅ | ✅ |

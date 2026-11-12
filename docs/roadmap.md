@@ -39,6 +39,20 @@ Silent, like Chrome or VS Code – no prompt, no click. Effort ~1–1½ days.
 Needs a public repo (release assets of a private repo are not downloadable without a token).
 Package managers (winget, Flathub/AppImage, Homebrew) come on top once the project is public.
 
+## Formulas
+
+- **Phase 1:** show the results stored in the file (Excel and LibreOffice save them with every
+  formula), the formula itself in the formula bar. No calculation, so opening stays fast.
+  Known gaps: volatile functions like `TODAY()` show the value from when the file was saved;
+  files written without results (e.g. by Python scripts) have none. For those, the cell shows
+  a hint instead of a silent 0 or blank.
+- **Phase 2:** editing needs recalculation. Use [IronCalc](https://github.com/ironcalc/IronCalc)
+  (Rust spreadsheet engine, MIT/Apache, reads and writes xlsx, several hundred Excel functions)
+  instead of writing an engine. Loaded only when editing starts, so viewing stays as fast as now.
+  Before committing to it: measure its effect on load time and binary size, check licence and
+  function coverage against real files.
+
 ## Phase 2 – write
 
-Edit cells, save as `.xlsx` only, formatting is not preserved. See [feature parity](feature-parity.md).
+Edit cells (with IronCalc recalculation, see above), save as `.xlsx` only, formatting is not
+preserved. See [feature parity](feature-parity.md).
