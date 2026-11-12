@@ -16,8 +16,8 @@ fn main() -> eframe::Result {
     #[cfg(windows)]
     if let Some(flag) = arg.as_ref().and_then(|a| a.to_str()) {
         let result = match flag {
-            "--register" => Some(register::register().map(|_| text::REGISTERED)),
-            "--unregister" => Some(register::unregister().map(|_| text::UNREGISTERED)),
+            "--register" => Some(register::register().map(|_| text::registered())),
+            "--unregister" => Some(register::unregister().map(|_| text::unregistered())),
             _ => None,
         };
         if let Some(result) = result {
@@ -26,7 +26,7 @@ fn main() -> eframe::Result {
                 Ok(msg) => (rfd::MessageLevel::Info, msg.to_owned()),
                 Err(e) => (
                     rfd::MessageLevel::Error,
-                    format!("{}: {e}", text::REGISTER_FAILED),
+                    format!("{}: {e}", text::register_failed()),
                 ),
             };
             rfd::MessageDialog::new()

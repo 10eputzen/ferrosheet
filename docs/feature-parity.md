@@ -21,7 +21,7 @@ so nobody expects an office suite. ✅ done · 🟡 planned · ❌ out of scope
 | Light and dark mode | ✅ | ✅ |
 | Drag & drop, open via file association | ✅ | ✅ / 🟡 Windows registration |
 | Cell formatting (fonts, colours, borders) | ✅ | ❌ values only |
-| Number formats from the file (currency, custom) | ✅ | 🟡 German default formats only |
+| Number formats from the file (currency, custom) | ✅ | 🟡 Default formats only (German or neutral, by system language) |
 | Merged cells | ✅ | ❌ |
 | Freeze panes, hidden rows and columns | ✅ | ❌ |
 | Sort and filter | ✅ | ❌ (maybe later, view-only) |

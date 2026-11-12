@@ -4,7 +4,7 @@
 
 use std::path::{Path, PathBuf};
 
-use ferrosheet_core::Workbook;
+use ferrosheet_core::{Locale, Workbook};
 
 const FIXTURES: [&str; 4] = ["date.xls", "date.xlsb", "date.ods", "demo.xlsx"];
 
@@ -20,7 +20,7 @@ fn load_all(bytes: &[u8], ext: &str, tag: &str) {
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join(format!("{tag}.{ext}"));
     std::fs::write(&path, bytes).unwrap();
-    let Ok(mut wb) = Workbook::open(&path) else {
+    let Ok(mut wb) = Workbook::open(&path, Locale::German) else {
         return;
     };
     for idx in 0..wb.sheet_names.len() {

@@ -22,6 +22,7 @@ pub fn find_all(sheet: &Sheet, query: &str) -> Vec<CellPos> {
 mod tests {
     use super::*;
     use crate::CellValue::*;
+    use crate::Locale;
 
     #[test]
     fn finds_case_insensitive() {
@@ -31,7 +32,7 @@ mod tests {
             Text("müller".into()),
             Text("MÜLLER-X".into()),
         ];
-        let s = Sheet::from_cells("t".into(), 2, 2, cells);
+        let s = Sheet::from_cells("t".into(), 2, 2, cells, Locale::German);
         assert_eq!(
             find_all(&s, "MÜLL"),
             [CellPos::new(0, 0), CellPos::new(1, 0), CellPos::new(1, 1)]
@@ -40,14 +41,20 @@ mod tests {
 
     #[test]
     fn searches_display_text() {
-        let s = Sheet::from_cells("t".into(), 1, 2, vec![Number(2.5), DateTime(45231.0)]);
+        let s = Sheet::from_cells(
+            "t".into(),
+            1,
+            2,
+            vec![Number(2.5), DateTime(45231.0)],
+            Locale::German,
+        );
         assert_eq!(find_all(&s, "2,5"), [CellPos::new(0, 0)]);
         assert_eq!(find_all(&s, "11.2023"), [CellPos::new(0, 1)]);
     }
 
     #[test]
     fn empty_query_no_hits() {
-        let s = Sheet::from_cells("t".into(), 1, 1, vec![Text("a".into())]);
+        let s = Sheet::from_cells("t".into(), 1, 1, vec![Text("a".into())], Locale::German);
         assert!(find_all(&s, "").is_empty());
         assert!(find_all(&Sheet::empty("e".into()), "a").is_empty());
     }

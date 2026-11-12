@@ -106,7 +106,7 @@ impl App {
 
     fn open_dialog(&mut self, ctx: &egui::Context) {
         if let Some(p) = rfd::FileDialog::new()
-            .add_filter(text::FILE_FILTER, EXTENSIONS)
+            .add_filter(text::file_filter(), EXTENSIONS)
             .pick_file()
         {
             self.open(ctx, p);
@@ -252,7 +252,7 @@ impl App {
     fn search_bar(&mut self, ui: &mut egui::Ui) {
         let large = self.large_sheet();
         ui.horizontal(|ui| {
-            let label = ui.label(text::SEARCH);
+            let label = ui.label(text::search());
             let resp = ui
                 .add(egui::TextEdit::singleline(&mut self.search.query).desired_width(240.0))
                 .labelled_by(label.id);
@@ -264,7 +264,7 @@ impl App {
                 self.search.dirty = true;
             }
             if ui
-                .checkbox(&mut self.search.all_sheets, text::ALL_SHEETS)
+                .checkbox(&mut self.search.all_sheets, text::all_sheets())
                 .changed()
             {
                 self.search.dirty = true;
@@ -288,21 +288,29 @@ impl App {
             }
             let label = match (self.search.current, self.search.hits.len()) {
                 _ if self.search.query.is_empty() => String::new(),
-                _ if self.search.dirty && large => text::SEARCH_ENTER.into(),
-                (_, 0) => text::NO_HITS.into(),
+                _ if self.search.dirty && large => text::search_enter().into(),
+                (_, 0) => text::no_hits().into(),
                 (Some(c), n) => text::hit_counter(c + 1, n),
                 (None, n) => text::hit_counter(0, n),
             };
             ui.weak(label);
-            if ui.small_button("<").on_hover_text(text::PREV_HIT).clicked() {
+            if ui
+                .small_button("<")
+                .on_hover_text(text::prev_hit())
+                .clicked()
+            {
                 self.jump(-1);
             }
-            if ui.small_button(">").on_hover_text(text::NEXT_HIT).clicked() {
+            if ui
+                .small_button(">")
+                .on_hover_text(text::next_hit())
+                .clicked()
+            {
                 self.jump(1);
             }
             if ui
                 .small_button("×")
-                .on_hover_text(text::CLOSE_SEARCH)
+                .on_hover_text(text::close_search())
                 .clicked()
             {
                 self.search.open = false;
@@ -406,7 +414,7 @@ impl App {
         egui::Panel::top("top").show(ui, |ui| {
             ui.add_space(2.0);
             ui.horizontal(|ui| {
-                if ui.button(text::OPEN).clicked() {
+                if ui.button(text::open()).clicked() {
                     self.open_dialog(ui.ctx());
                 }
                 if let Some(v) = self.active_view() {
@@ -479,10 +487,10 @@ impl App {
         let Some(err) = &self.error else { return };
         let resp = egui::Modal::new(egui::Id::unique("error")).show(ctx, |ui| {
             ui.set_max_width(420.0);
-            ui.heading(text::LOAD_FAILED);
+            ui.heading(text::load_failed());
             ui.label(err);
             ui.add_space(8.0);
-            ui.button(text::OK).clicked()
+            ui.button(text::ok()).clicked()
         });
         if resp.inner || resp.should_close() {
             self.error = None;
@@ -510,11 +518,11 @@ impl eframe::App for App {
         self.bottom_bar(ui);
         egui::CentralPanel::no_frame().show(ui, |ui| match &mut self.doc {
             None => {
-                ui.centered_and_justified(|ui| ui.weak(text::OPEN_HINT));
+                ui.centered_and_justified(|ui| ui.weak(text::open_hint()));
             }
             Some(doc) => match doc.sheets.get_mut(doc.active).and_then(Option::as_mut) {
                 Some(v) if v.sheet.rows == 0 => {
-                    ui.centered_and_justified(|ui| ui.weak(text::EMPTY_SHEET));
+                    ui.centered_and_justified(|ui| ui.weak(text::empty_sheet()));
                 }
                 Some(v) => {
                     let active = doc.active;
@@ -540,7 +548,7 @@ impl eframe::App for App {
                     ui.centered_and_justified(|ui| {
                         ui.horizontal(|ui| {
                             ui.spinner();
-                            ui.label(text::LOADING);
+                            ui.label(text::loading());
                         })
                     });
                 }
@@ -636,10 +644,10 @@ mod tests {
     fn opens_the_first_sheet_with_values_and_formulas() {
         let mut h = open(demo());
         let doc = h.state().doc.as_ref().unwrap();
-        assert_eq!(doc.names, ["Rechnung", "Übersicht"]);
+        assert_eq!(doc.names, ["Invoice", "Summary"]);
         let v = h.state_mut().active_view().unwrap();
-        assert_eq!(v.sheet.display(0, 0), "Artikel");
-        assert_eq!(v.sheet.display(2, 0), "Kabelkanal 2 m");
+        assert_eq!(v.sheet.display(0, 0), "Item");
+        assert_eq!(v.sheet.display(2, 0), "Cable duct 2 m");
         assert_eq!(v.formulas[&(1, 3)], "=B2*C2*(1-G2)");
         assert_eq!(v.formulas[&(6, 3)], "=SUM(D2:D5)");
         assert!(h.state().error.is_none());
@@ -678,10 +686,7 @@ mod tests {
         };
         h.event(Event::Copy);
         h.step();
-        assert_eq!(
-            copied(&h).as_deref(),
-            Some("Artikel\tMenge\r\nSchrauben M4\t120")
-        );
+        assert_eq!(copied(&h).as_deref(), Some("Item\tQty\r\nScrews M4\t120"));
 
         h.key_press_modifiers(Modifiers::COMMAND, Key::A);
         h.run();
@@ -698,7 +703,7 @@ mod tests {
             app.doc.as_ref().is_some_and(|d| d.active == 1) && app.active_view().is_some()
         });
         let v = h.state_mut().active_view().unwrap();
-        assert_eq!(v.sheet.display(0, 0), "Bezug auf das erste Blatt");
+        assert_eq!(v.sheet.display(0, 0), "Linked to the first sheet");
 
         // switching past the last sheet stays on it
         h.key_press_modifiers(Modifiers::COMMAND, Key::PageDown);
@@ -715,14 +720,14 @@ mod tests {
         h.key_press_modifiers(Modifiers::COMMAND, Key::F);
         h.run();
         assert!(h.state().search.open);
-        h.event(Event::Text("netz".into()));
+        h.event(Event::Text("power".into()));
         h.run();
         assert_eq!(h.state().search.hits.len(), 1);
         assert_eq!(cursor(&mut h), CellPos::new(3, 0));
         h.get_by_label(&text::hit_counter(1, 1));
 
         // a query with several hits: F3 moves on, Shift+F3 back
-        for _ in 0.."netz".len() {
+        for _ in 0.."power".len() {
             h.key_press(Key::Backspace);
         }
         h.event(Event::Text("m".into()));
@@ -758,8 +763,8 @@ mod tests {
             .with_size([900.0, 600.0])
             .build_eframe(move |cc| App::new(&cc.egui_ctx, Some(path)));
         settle(&mut h, |app| app.error.is_some());
-        h.get_by_label(text::LOAD_FAILED);
-        h.get_by_label(text::OK).click();
+        h.get_by_label(text::load_failed());
+        h.get_by_label(text::ok()).click();
         h.run();
         assert!(h.state().error.is_none());
     }
@@ -770,6 +775,6 @@ mod tests {
             .with_size([900.0, 600.0])
             .build_eframe(|cc| App::new(&cc.egui_ctx, Some(PathBuf::from("gibt-es-nicht.xlsx"))));
         settle(&mut h, |app| app.error.is_some());
-        h.get_by_label(text::LOAD_FAILED);
+        h.get_by_label(text::load_failed());
     }
 }

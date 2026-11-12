@@ -32,25 +32,26 @@ pub enum CellError {
 
 /// How values are turned into text.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum CopyFormat {
-    /// German display format: decimal comma, `TT.MM.JJJJ`, `WAHR`/`FALSCH`.
-    Display,
-    /// Locale-neutral: decimal point, ISO dates, `TRUE`/`FALSE`.
+pub enum Locale {
+    /// German: decimal comma, `TT.MM.JJJJ`, `WAHR`/`FALSCH`, `#NV`.
+    German,
+    /// Locale-neutral (also the English display): decimal point, ISO dates,
+    /// `TRUE`/`FALSE`, `#N/A`.
     Invariant,
 }
 
 impl CellValue {
     /// Renders the value as text in the given format.
-    pub fn format(&self, f: CopyFormat) -> String {
+    pub fn format(&self, f: Locale) -> String {
         match self {
             CellValue::Empty => String::new(),
             CellValue::Text(s) => s.to_string(),
             CellValue::Number(n) => format_number(*n, f),
             CellValue::Bool(b) => match (b, f) {
-                (true, CopyFormat::Display) => "WAHR".into(),
-                (false, CopyFormat::Display) => "FALSCH".into(),
-                (true, CopyFormat::Invariant) => "TRUE".into(),
-                (false, CopyFormat::Invariant) => "FALSE".into(),
+                (true, Locale::German) => "WAHR".into(),
+                (false, Locale::German) => "FALSCH".into(),
+                (true, Locale::Invariant) => "TRUE".into(),
+                (false, Locale::Invariant) => "FALSE".into(),
             },
             CellValue::DateTime(serial) => {
                 format_datetime(*serial, f).unwrap_or_else(|| format_number(*serial, f))
@@ -70,28 +71,28 @@ impl CellValue {
 }
 
 impl CellError {
-    pub fn text(self, f: CopyFormat) -> &'static str {
+    pub fn text(self, f: Locale) -> &'static str {
         use CellError::*;
         match (self, f) {
             (Div0, _) => "#DIV/0!",
-            (NA, CopyFormat::Display) => "#NV",
-            (NA, CopyFormat::Invariant) => "#N/A",
-            (Value, CopyFormat::Display) => "#WERT!",
-            (Value, CopyFormat::Invariant) => "#VALUE!",
-            (Ref, CopyFormat::Display) => "#BEZUG!",
-            (Ref, CopyFormat::Invariant) => "#REF!",
+            (NA, Locale::German) => "#NV",
+            (NA, Locale::Invariant) => "#N/A",
+            (Value, Locale::German) => "#WERT!",
+            (Value, Locale::Invariant) => "#VALUE!",
+            (Ref, Locale::German) => "#BEZUG!",
+            (Ref, Locale::Invariant) => "#REF!",
             (Name, _) => "#NAME?",
-            (Num, CopyFormat::Display) => "#ZAHL!",
-            (Num, CopyFormat::Invariant) => "#NUM!",
+            (Num, Locale::German) => "#ZAHL!",
+            (Num, Locale::Invariant) => "#NUM!",
             (Null, _) => "#NULL!",
-            (GettingData, CopyFormat::Display) => "#DATEN!",
-            (GettingData, CopyFormat::Invariant) => "#GETTING_DATA",
+            (GettingData, Locale::German) => "#DATEN!",
+            (GettingData, Locale::Invariant) => "#GETTING_DATA",
         }
     }
 }
 
 /// At most 15 significant digits (like Excel), shortest representation, no `.0`.
-fn format_number(n: f64, f: CopyFormat) -> String {
+fn format_number(n: f64, f: Locale) -> String {
     if !n.is_finite() {
         return n.to_string();
     }
@@ -99,8 +100,8 @@ fn format_number(n: f64, f: CopyFormat) -> String {
     let rounded = if rounded == 0.0 { 0.0 } else { rounded }; // no "-0"
     let s = rounded.to_string();
     match f {
-        CopyFormat::Display => s.replace('.', ","),
-        CopyFormat::Invariant => s,
+        Locale::German => s.replace('.', ","),
+        Locale::Invariant => s,
     }
 }
 
@@ -126,7 +127,7 @@ fn hhmm(secs: i64) -> String {
     }
 }
 
-fn format_datetime(serial: f64, f: CopyFormat) -> Option<String> {
+fn format_datetime(serial: f64, f: Locale) -> Option<String> {
     if !serial.is_finite() || serial < 0.0 {
         return None;
     }
@@ -142,8 +143,8 @@ fn format_datetime(serial: f64, f: CopyFormat) -> Option<String> {
     };
     let date = base.checked_add_signed(Duration::try_days(days)?)?;
     let date = match f {
-        CopyFormat::Display => date.format("%d.%m.%Y").to_string(),
-        CopyFormat::Invariant => date.format("%Y-%m-%d").to_string(),
+        Locale::German => date.format("%d.%m.%Y").to_string(),
+        Locale::Invariant => date.format("%Y-%m-%d").to_string(),
     };
     Some(if secs == 0 {
         date
@@ -161,65 +162,62 @@ fn format_duration(days: f64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use CopyFormat::*;
+    use Locale::*;
 
     #[test]
     fn format_numbers() {
-        assert_eq!(CellValue::Number(42.0).format(Display), "42");
-        assert_eq!(CellValue::Number(0.1 + 0.2).format(Display), "0,3");
+        assert_eq!(CellValue::Number(42.0).format(German), "42");
+        assert_eq!(CellValue::Number(0.1 + 0.2).format(German), "0,3");
         assert_eq!(CellValue::Number(3.5).format(Invariant), "3.5");
-        assert_eq!(
-            CellValue::Number(1234567.891).format(Display),
-            "1234567,891"
-        );
+        assert_eq!(CellValue::Number(1234567.891).format(German), "1234567,891");
     }
 
     #[test]
     fn format_large_and_negative() {
-        assert_eq!(CellValue::Number(-0.5).format(Display), "-0,5");
+        assert_eq!(CellValue::Number(-0.5).format(German), "-0,5");
         assert_eq!(
-            CellValue::Number(1e20).format(Display),
+            CellValue::Number(1e20).format(German),
             "100000000000000000000"
         );
-        assert_eq!(CellValue::Number(-0.0).format(Display), "0");
+        assert_eq!(CellValue::Number(-0.0).format(German), "0");
     }
 
     #[test]
     fn format_dates() {
-        assert_eq!(CellValue::DateTime(45231.0).format(Display), "01.11.2023");
+        assert_eq!(CellValue::DateTime(45231.0).format(German), "01.11.2023");
         assert_eq!(
-            CellValue::DateTime(45231.5).format(Display),
+            CellValue::DateTime(45231.5).format(German),
             "01.11.2023 12:00"
         );
         assert_eq!(
-            CellValue::DateTime(45231.0 + 45296.0 / 86400.0).format(Display),
+            CellValue::DateTime(45231.0 + 45296.0 / 86400.0).format(German),
             "01.11.2023 12:34:56"
         );
-        assert_eq!(CellValue::DateTime(0.75).format(Display), "18:00");
+        assert_eq!(CellValue::DateTime(0.75).format(German), "18:00");
         assert_eq!(
             CellValue::DateTime(45231.5).format(Invariant),
             "2023-11-01 12:00"
         );
-        assert_eq!(CellValue::DateTime(1.0).format(Display), "01.01.1900");
+        assert_eq!(CellValue::DateTime(1.0).format(German), "01.01.1900");
     }
 
     #[test]
     fn format_invalid_date_falls_back() {
-        assert_eq!(CellValue::DateTime(-5.0).format(Display), "-5");
+        assert_eq!(CellValue::DateTime(-5.0).format(German), "-5");
     }
 
     #[test]
     fn format_durations() {
-        assert_eq!(CellValue::Duration(1.5).format(Display), "36:00");
-        assert_eq!(CellValue::Duration(-0.25).format(Display), "-06:00");
+        assert_eq!(CellValue::Duration(1.5).format(German), "36:00");
+        assert_eq!(CellValue::Duration(-0.25).format(German), "-06:00");
     }
 
     #[test]
     fn format_bool_and_error() {
-        assert_eq!(CellValue::Bool(true).format(Display), "WAHR");
+        assert_eq!(CellValue::Bool(true).format(German), "WAHR");
         assert_eq!(CellValue::Bool(false).format(Invariant), "FALSE");
-        assert_eq!(CellValue::Error(CellError::Div0).format(Display), "#DIV/0!");
-        assert_eq!(CellValue::Error(CellError::NA).format(Display), "#NV");
+        assert_eq!(CellValue::Error(CellError::Div0).format(German), "#DIV/0!");
+        assert_eq!(CellValue::Error(CellError::NA).format(German), "#NV");
         assert_eq!(CellValue::Error(CellError::NA).format(Invariant), "#N/A");
     }
 }

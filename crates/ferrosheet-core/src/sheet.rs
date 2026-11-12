@@ -2,7 +2,7 @@
 
 use std::sync::OnceLock;
 
-use crate::{CellValue, CopyFormat};
+use crate::{CellValue, Locale};
 
 /// A worksheet ready for display. Cell `(0, 0)` is `A1`.
 #[derive(Debug, Default)]
@@ -27,12 +27,19 @@ impl Sheet {
         }
     }
 
-    /// Builds a sheet from row-major cells (`cells.len() == rows * cols`).
-    pub fn from_cells(name: String, rows: u32, cols: u32, cells: Vec<CellValue>) -> Sheet {
+    /// Builds a sheet from row-major cells (`cells.len() == rows * cols`), with the
+    /// display text in `locale`.
+    pub fn from_cells(
+        name: String,
+        rows: u32,
+        cols: u32,
+        cells: Vec<CellValue>,
+        locale: Locale,
+    ) -> Sheet {
         debug_assert_eq!(cells.len(), rows as usize * cols as usize);
         let display = cells
             .iter()
-            .map(|c| c.format(CopyFormat::Display).into_boxed_str())
+            .map(|c| c.format(locale).into_boxed_str())
             .collect();
         Sheet {
             name,

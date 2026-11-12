@@ -1,6 +1,15 @@
 //! Rectangular cell selection and the text it puts on the clipboard.
 
-use crate::{CopyFormat, Sheet};
+use crate::{Locale, Sheet};
+
+/// What [`copy_text`] puts on the clipboard.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CopyFormat {
+    /// The text as shown in the grid.
+    Display,
+    /// Locale-neutral raw values: decimal point, ISO dates, `TRUE`/`FALSE`.
+    Invariant,
+}
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct CellPos {
@@ -87,7 +96,9 @@ pub fn copy_text(sheet: &Sheet, sel: &Selection, f: CopyFormat) -> String {
             }
             match f {
                 CopyFormat::Display => push_cell(&mut out, sheet.display(r, c)),
-                CopyFormat::Invariant => push_cell(&mut out, &sheet.value(r, c).format(f)),
+                CopyFormat::Invariant => {
+                    push_cell(&mut out, &sheet.value(r, c).format(Locale::Invariant))
+                }
             }
         }
     }
@@ -110,7 +121,7 @@ mod tests {
     use crate::CellValue::{self, *};
 
     fn sheet(rows: u32, cols: u32, cells: Vec<CellValue>) -> Sheet {
-        Sheet::from_cells("t".into(), rows, cols, cells)
+        Sheet::from_cells("t".into(), rows, cols, cells, Locale::German)
     }
 
     fn all(rows: u32, cols: u32) -> Selection {

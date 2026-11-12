@@ -4,7 +4,8 @@ use std::time::Instant;
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let path = std::env::args().nth(1).ok_or("usage: bench_load <file>")?;
     let t = Instant::now();
-    let mut wb = ferrosheet_core::Workbook::open(path.as_ref())?;
+    let mut wb =
+        ferrosheet_core::Workbook::open(path.as_ref(), ferrosheet_core::Locale::Invariant)?;
     let open = t.elapsed();
     let t = Instant::now();
     let sheet = wb.load_sheet(0)?;

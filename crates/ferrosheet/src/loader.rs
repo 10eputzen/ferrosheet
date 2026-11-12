@@ -42,12 +42,12 @@ impl Loader {
                 let _ = msg_tx.send(m);
                 ctx.request_repaint();
             };
-            let mut wb = match Workbook::open(&path) {
+            let mut wb = match Workbook::open(&path, crate::text::locale()) {
                 Ok(wb) => wb,
                 Err(e) => {
                     return send(LoadMsg::Error {
                         sheet: None,
-                        msg: e.to_string(),
+                        msg: crate::text::load_error(&e),
                     });
                 }
             };
@@ -65,7 +65,7 @@ impl Loader {
                     Err(e) => {
                         send(LoadMsg::Error {
                             sheet: Some(idx),
-                            msg: e.to_string(),
+                            msg: crate::text::load_error(&e),
                         });
                         continue;
                     }

@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use calamine::{CellErrorType, Data, ExcelDateTime, Reader, Sheets, open_workbook_auto};
 use chrono::NaiveDate;
 
-use crate::{CellError, CellValue, Sheet};
+use crate::{CellError, CellValue, Locale, Sheet};
 
 /// File extensions ferrosheet can open.
 pub const EXTENSIONS: &[&str] = &["xls", "xlsx", "xlsm", "xlsb", "ods"];
@@ -19,13 +19,16 @@ pub const EXTENSIONS: &[&str] = &["xls", "xlsx", "xlsm", "xlsb", "ods"];
 pub enum LoadError {
     Io(std::io::Error),
     Format(String),
+    /// The parser gave up on the file (it panicked); the file is most likely damaged.
+    Damaged,
 }
 
 impl fmt::Display for LoadError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            LoadError::Io(e) => write!(f, "Datei konnte nicht gelesen werden: {e}"),
-            LoadError::Format(e) => write!(f, "Datei ist keine lesbare Tabelle: {e}"),
+            LoadError::Io(e) => write!(f, "could not read the file: {e}"),
+            LoadError::Format(e) => write!(f, "not a readable spreadsheet: {e}"),
+            LoadError::Damaged => write!(f, "the file is damaged"),
         }
     }
 }
@@ -45,11 +48,13 @@ impl From<calamine::Error> for LoadError {
 pub struct Workbook {
     pub path: PathBuf,
     pub sheet_names: Vec<String>,
+    /// How loaded sheets render their values.
+    pub locale: Locale,
     inner: Sheets<BufReader<File>>,
 }
 
 impl Workbook {
-    pub fn open(path: &Path) -> Result<Workbook, LoadError> {
+    pub fn open(path: &Path, locale: Locale) -> Result<Workbook, LoadError> {
         if !path.exists() {
             return Err(LoadError::Io(std::io::Error::new(
                 std::io::ErrorKind::NotFound,
@@ -60,6 +65,7 @@ impl Workbook {
         Ok(Workbook {
             path: path.to_path_buf(),
             sheet_names: inner.sheet_names(),
+            locale,
             inner,
         })
     }
@@ -71,7 +77,7 @@ impl Workbook {
         let range = guard(|| {
             Ok(inner
                 .worksheet_range_at(idx)
-                .ok_or_else(|| LoadError::Format(format!("Blatt {idx} fehlt")))??)
+                .ok_or_else(|| LoadError::Format(format!("sheet {idx} is missing")))??)
         })?;
         let Some((r0, c0)) = range.start() else {
             return Ok(Sheet::empty(name));
@@ -83,7 +89,7 @@ impl Workbook {
             let idx = (r0 as usize + r) * cols as usize + c0 as usize + c;
             cells[idx] = convert(data);
         }
-        Ok(Sheet::from_cells(name, rows, cols, cells))
+        Ok(Sheet::from_cells(name, rows, cols, cells, self.locale))
     }
 
     /// Formulas of sheet `idx`, keyed by `(row, col)`, always starting with `=`.
@@ -112,7 +118,7 @@ impl Workbook {
         self.sheet_names
             .get(idx)
             .cloned()
-            .ok_or_else(|| LoadError::Format(format!("Blatt {idx} fehlt")))
+            .ok_or_else(|| LoadError::Format(format!("sheet {idx} is missing")))
     }
 }
 
@@ -120,7 +126,7 @@ impl Workbook {
 /// parser index out of bounds; the user should see a message, not a crashed app.
 fn guard<T>(f: impl FnOnce() -> Result<T, LoadError>) -> Result<T, LoadError> {
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(f))
-        .unwrap_or_else(|_| Err(LoadError::Format("Datei ist beschädigt".into())))
+        .unwrap_or_else(|_| Err(LoadError::Damaged))
 }
 
 fn convert(data: &Data) -> CellValue {

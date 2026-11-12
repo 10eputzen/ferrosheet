@@ -29,7 +29,8 @@ question was: why not port that small piece to Rust?
 
 It is a viewer. Editing and saving as `.xlsx` are planned for phase 2, see the
 [roadmap](docs/roadmap.md) and the honest [comparison with LibreOffice Calc](docs/feature-parity.md).
-The interface is in German for now.
+The interface follows the system language: German on a German system, English everywhere
+else (dates as `2026-11-02`, decimal point). Set `FERROSHEET_LANG=de` or `en` to override.
 
 ## Performance
 

@@ -13,6 +13,7 @@ eframe = { version = "0.37", default-features = false, features = ["clipboard", 
 rfd = "0.18"
 # Only for the screenshot feature.
 image = { version = "0.25", optional = true, default-features = false, features = ["png"] }
+sys-locale = "0.3.2"
 
 [target.'cfg(windows)'.dependencies]
 winreg = "0.56"

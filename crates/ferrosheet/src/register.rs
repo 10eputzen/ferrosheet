@@ -26,7 +26,7 @@ fn entries(exe: &Path) -> Vec<(String, String, String)> {
         (
             format!(r"{CLASSES}\{PROG_ID}"),
             String::new(),
-            "Tabelle".into(),
+            crate::text::file_type().into(),
         ),
         (
             format!(r"{CLASSES}\{PROG_ID}\DefaultIcon"),
@@ -51,7 +51,7 @@ fn entries(exe: &Path) -> Vec<(String, String, String)> {
         (
             CAPABILITIES.into(),
             "ApplicationDescription".into(),
-            "Schneller Betrachter für Excel- und ODS-Tabellen".into(),
+            crate::text::app_description().into(),
         ),
         (REGISTERED_APPS.into(), APP_NAME.into(), CAPABILITIES.into()),
     ];

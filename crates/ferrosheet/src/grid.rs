@@ -587,12 +587,18 @@ fn digits(n: u32) -> u32 {
 mod tests {
     use super::*;
     use egui_kittest::Harness;
-    use ferrosheet_core::CellValue;
+    use ferrosheet_core::{CellValue, Locale};
 
     /// Grid with a 5×5 sheet; the state also records where the grid starts on screen.
     fn harness() -> Harness<'static, (GridState, egui::Pos2)> {
         let cells = (0..25).map(|i| CellValue::Number(i as f64)).collect();
-        harness_for(Sheet::from_cells("t".into(), 5, 5, cells))
+        harness_for(Sheet::from_cells(
+            "t".into(),
+            5,
+            5,
+            cells,
+            Locale::Invariant,
+        ))
     }
 
     fn harness_for(sheet: Sheet) -> Harness<'static, (GridState, egui::Pos2)> {
@@ -642,7 +648,7 @@ mod tests {
         for (r, t) in texts {
             cells[*r as usize] = CellValue::Text((*t).into());
         }
-        Sheet::from_cells("t".into(), rows, 1, cells)
+        Sheet::from_cells("t".into(), rows, 1, cells, Locale::Invariant)
     }
 
     const LONG: &str = "eine deutlich längere zweite Zeile mit viel Text darin";
