@@ -119,7 +119,7 @@ texts! {
     zoom_in: "Vergrößern", "Zoom in";
     zoom_out: "Verkleinern", "Zoom out";
     zoom_reset: "Originalgröße (100 %)", "Actual size (100 %)";
-    zoom_hint: "Zoom – klicken für 100 %", "Zoom – click for 100 %";
+    zoom_hint: "Zoom – eintippen oder ziehen", "Zoom – type or drag";
     select_column: "Spalte auswählen", "Select column";
     select_row: "Zeile auswählen", "Select row";
     fit_width: "Optimale Spaltenbreite", "Autofit column width";
@@ -170,10 +170,6 @@ pub fn delete_sheet_question(name: &str) -> String {
     }
 }
 
-pub fn zoom_percent(zoom: f32) -> String {
-    format!("{} %", (zoom * 100.0).round() as u32)
-}
-
 pub fn cannot_edit(reason: &str) -> String {
     let reason = if reason.is_empty() { "?" } else { reason };
     match lang() {
@@ -205,6 +201,13 @@ pub fn hit_counter(current: usize, total: usize) -> String {
     match lang() {
         Lang::De => format!("{current} von {total}"),
         Lang::En => format!("{current} of {total}"),
+    }
+}
+
+pub fn restarting() -> &'static str {
+    match lang() {
+        Lang::De => "Starte neu …",
+        Lang::En => "Restarting …",
     }
 }
 

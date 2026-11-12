@@ -16,6 +16,11 @@ use eframe::egui;
 fn main() -> eframe::Result {
     let (restore, args) = update::take_restore(std::env::args_os().skip(1).collect());
     let arg = args.first().cloned();
+    // Also used by the updater to start a downloaded exe once, without a window.
+    if arg.as_deref() == Some(std::ffi::OsStr::new("--version")) {
+        println!("ferrosheet {}", env!("CARGO_PKG_VERSION"));
+        return Ok(());
+    }
     #[cfg(windows)]
     if let Some(flag) = arg.as_ref().and_then(|a| a.to_str()) {
         let result = match flag {

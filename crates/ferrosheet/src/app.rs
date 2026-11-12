@@ -136,6 +136,8 @@ enum Update {
     Downloading(Receiver<String>),
     /// Downloaded; a restart swaps it in.
     Ready(String),
+    /// The new version is being started; this window closes once it runs.
+    Restarting(Receiver<Result<(), String>>),
 }
 
 #[derive(Default)]
@@ -931,23 +933,62 @@ impl App {
                 if self.doc.is_some() {
                     egui::ScrollArea::horizontal()
                         .id_salt("tabs")
-                        .max_width(ui.available_width() - 260.0)
+                        .max_width(ui.available_width() - 420.0)
                         .show(ui, |ui| {
                             ui.horizontal(|ui| self.sheet_tabs(ui, &mut cmd));
                         });
                 }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if self.doc.is_some()
-                        && ui
-                            .add(egui::Button::new(text::zoom_percent(zoom)).frame(false))
-                            .on_hover_text(text::zoom_hint())
-                            .clicked()
-                    {
-                        cmd = Some(Cmd::Zoom(1.0));
+                    if self.doc.is_some() {
+                        // Like Excel: − slider + and the percentage, which takes typing.
+                        let mut pct = zoom * 100.0;
+                        let field = ui
+                            .add(
+                                egui::DragValue::new(&mut pct)
+                                    .range(grid::MIN_ZOOM * 100.0..=grid::MAX_ZOOM * 100.0)
+                                    .speed(1.0)
+                                    .max_decimals(0)
+                                    .suffix(" %"),
+                            )
+                            .on_hover_text(text::zoom_hint());
+                        if field.changed() {
+                            cmd = Some(Cmd::Zoom(pct / 100.0));
+                        }
+                        if zoom_button(ui, "+", text::zoom_in()) {
+                            cmd = Some(Cmd::Zoom(self.zoom_step(true)));
+                        }
+                        let slider = ui.add(
+                            egui::Slider::new(
+                                &mut pct,
+                                grid::MIN_ZOOM * 100.0..=grid::MAX_ZOOM * 100.0,
+                            )
+                            .logarithmic(true)
+                            .show_value(false),
+                        );
+                        slider.widget_info(|| {
+                            egui::WidgetInfo::labeled(egui::Role::Slider, true, "Zoom")
+                        });
+                        if slider.changed() {
+                            cmd = Some(Cmd::Zoom(pct / 100.0));
+                        }
+                        if slider.double_clicked() {
+                            cmd = Some(Cmd::Zoom(1.0));
+                        }
+                        if zoom_button(ui, "−", text::zoom_out()) {
+                            cmd = Some(Cmd::Zoom(self.zoom_step(false)));
+                        }
                     }
-                    if let Update::Ready(v) = &self.update {
-                        start_update = ui.link(text::update_ready(v)).clicked();
-                        ui.separator();
+                    match &self.update {
+                        Update::Ready(v) => {
+                            start_update = ui.link(text::update_ready(v)).clicked();
+                            ui.separator();
+                        }
+                        Update::Restarting(_) => {
+                            ui.spinner();
+                            ui.label(text::restarting());
+                            ui.separator();
+                        }
+                        _ => {}
                     }
                     match &self.status {
                         Some((msg, t)) if now - t < STATUS_SECS => {
@@ -1043,19 +1084,37 @@ impl App {
         }
     }
 
-    fn poll_update(&mut self) {
-        if let Update::Downloading(rx) = &self.update {
-            match rx.try_recv() {
+    fn poll_update(&mut self, ctx: &egui::Context) {
+        match &self.update {
+            Update::Downloading(rx) => match rx.try_recv() {
                 Ok(v) => self.update = Update::Ready(v),
                 Err(TryRecvError::Disconnected) => self.update = Update::None,
                 Err(TryRecvError::Empty) => {}
-            }
+            },
+            Update::Restarting(rx) => match rx.try_recv() {
+                Ok(Ok(())) => {
+                    self.allow_close = true;
+                    ctx.send_viewport_cmd(ViewportCommand::Close);
+                }
+                Ok(Err(e)) => {
+                    self.update = Update::None;
+                    self.update_failed(e);
+                }
+                Err(TryRecvError::Disconnected) => self.update = Update::None,
+                Err(TryRecvError::Empty) => {}
+            },
+            _ => {}
         }
     }
 
     /// Swaps in the downloaded version and starts it with the same window, file and
     /// sheet; this process then closes. Feels like a reload.
     fn restart_for_update(&mut self, ctx: &egui::Context) {
+        // Unsaved changes first: save or discard, then this runs again.
+        if self.dirty() {
+            self.confirm = Some(After::Restart);
+            return;
+        }
         let restore = ctx.input(|i| {
             let vp = i.viewport();
             let inner = vp.inner_rect?;
@@ -1071,11 +1130,15 @@ impl App {
             .iter()
             .map(|d| d.path.clone().into_os_string())
             .collect();
-        match update::restart(&args, restore) {
-            Ok(()) => ctx.send_viewport_cmd(ViewportCommand::Close),
-            Err(e) => self.update_failed(e),
-        }
-        self.update = Update::None;
+        // Starting a fresh exe can block for seconds while the virus scanner checks
+        // it, so it runs off the UI thread; the window closes once the new one runs.
+        let (tx, rx) = std::sync::mpsc::channel();
+        let repaint = ctx.clone();
+        std::thread::spawn(move || {
+            let _ = tx.send(update::restart(&args, restore));
+            repaint.request_repaint();
+        });
+        self.update = Update::Restarting(rx);
     }
 
     fn update_failed(&mut self, e: String) {
@@ -1106,7 +1169,7 @@ impl eframe::App for App {
         screenshot(&ctx);
         self.receive(&ctx);
         self.poll_engine(&ctx);
-        self.poll_update();
+        self.poll_update(&ctx);
 
         if ctx.input(|i| i.viewport().close_requested()) && self.dirty() && !self.allow_close {
             ctx.send_viewport_cmd(ViewportCommand::CancelClose);
@@ -1293,6 +1356,13 @@ fn screenshot(ctx: &egui::Context) {
             .expect("save screenshot");
         ctx2.send_viewport_cmd(egui::ViewportCommand::Close);
     });
+}
+
+/// A small `+`/`−` zoom button, named for screen readers by what it does.
+fn zoom_button(ui: &mut egui::Ui, glyph: &str, name: &'static str) -> bool {
+    let r = ui.small_button(glyph).on_hover_text(name);
+    r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, name));
+    r.clicked()
 }
 
 #[cfg(test)]
@@ -1784,7 +1854,8 @@ mod tests {
         h.key_press_modifiers(Modifiers::COMMAND, Key::Minus);
         h.run();
         assert_eq!(h.state().zoom(), 0.9);
-        h.get_by_label("90 %").click();
+        // The status bar: − slider + like Excel.
+        h.get_by_label(text::zoom_in()).click();
         h.run();
         assert_eq!(h.state().zoom(), 1.0);
         let back = h.state_mut().active_view().unwrap().grid.col_widths[0];

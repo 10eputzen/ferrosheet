@@ -51,6 +51,8 @@ pub(super) enum Op {
 pub(super) enum After {
     Close,
     Open(PathBuf),
+    /// Restart into a downloaded update.
+    Restart,
 }
 
 #[derive(Default)]
@@ -325,6 +327,7 @@ impl App {
                         ctx.send_viewport_cmd(ViewportCommand::Close);
                     }
                     Some(After::Open(p)) => self.open(ctx, p),
+                    Some(After::Restart) => self.restart_for_update(ctx),
                     None => {}
                 }
             }
@@ -415,6 +418,7 @@ impl App {
                         ctx.send_viewport_cmd(ViewportCommand::Close);
                     }
                     After::Open(p) => self.open(ctx, p),
+                    After::Restart => self.restart_for_update(ctx),
                 }
             }
             None => {}

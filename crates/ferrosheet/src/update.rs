@@ -181,7 +181,24 @@ fn download_into(version: &str, dir: &Path, pending: &Path) -> Result<(), String
         .arg(&url))?;
     run(cmd("tar").arg("-xf").arg(&archive).arg("-C").arg(dir))?;
     // Moved in one step, so a half-finished download never looks like an update.
-    std::fs::rename(dir.join(ASSET).join(BIN), pending).map_err(|e| e.to_string())
+    std::fs::rename(dir.join(ASSET).join(BIN), pending).map_err(|e| e.to_string())?;
+    // Run it once now, hidden: the virus scanner checks a new exe on its first start,
+    // which can take seconds. Done here, the restart later is instant.
+    let _ = hidden(pending).arg("--version").output();
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn hidden(program: &Path) -> Command {
+    Command::new(program)
+}
+
+#[cfg(windows)]
+fn hidden(program: &Path) -> Command {
+    use std::os::windows::process::CommandExt;
+    let mut c = Command::new(program);
+    c.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    c
 }
 
 /// A running executable cannot be overwritten on Windows, but it can be renamed:
