@@ -56,7 +56,7 @@ impl Workbook {
                 path.display().to_string(),
             )));
         }
-        let inner = open_workbook_auto(path)?;
+        let inner = guard(|| Ok(open_workbook_auto(path)?))?;
         Ok(Workbook {
             path: path.to_path_buf(),
             sheet_names: inner.sheet_names(),
@@ -67,10 +67,12 @@ impl Workbook {
     /// Reads sheet `idx` and converts it into a display-ready [`Sheet`].
     pub fn load_sheet(&mut self, idx: usize) -> Result<Sheet, LoadError> {
         let name = self.sheet_name(idx)?;
-        let range = self
-            .inner
-            .worksheet_range_at(idx)
-            .ok_or_else(|| LoadError::Format(format!("Blatt {idx} fehlt")))??;
+        let inner = &mut self.inner;
+        let range = guard(|| {
+            Ok(inner
+                .worksheet_range_at(idx)
+                .ok_or_else(|| LoadError::Format(format!("Blatt {idx} fehlt")))??)
+        })?;
         let Some((r0, c0)) = range.start() else {
             return Ok(Sheet::empty(name));
         };
@@ -87,7 +89,8 @@ impl Workbook {
     /// Formulas of sheet `idx`, keyed by `(row, col)`, always starting with `=`.
     pub fn load_formulas(&mut self, idx: usize) -> Result<HashMap<(u32, u32), String>, LoadError> {
         let name = self.sheet_name(idx)?;
-        let range = self.inner.worksheet_formula(&name)?;
+        let inner = &mut self.inner;
+        let range = guard(|| Ok(inner.worksheet_formula(&name)?))?;
         let Some((r0, c0)) = range.start() else {
             return Ok(HashMap::new());
         };
@@ -111,6 +114,13 @@ impl Workbook {
             .cloned()
             .ok_or_else(|| LoadError::Format(format!("Blatt {idx} fehlt")))
     }
+}
+
+/// Runs a parser call and turns a panic into an error. Damaged files can make the
+/// parser index out of bounds; the user should see a message, not a crashed app.
+fn guard<T>(f: impl FnOnce() -> Result<T, LoadError>) -> Result<T, LoadError> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(f))
+        .unwrap_or_else(|_| Err(LoadError::Format("Datei ist beschädigt".into())))
 }
 
 fn convert(data: &Data) -> CellValue {

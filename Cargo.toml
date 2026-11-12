@@ -16,7 +16,7 @@ ferrosheet-core = { path = "crates/ferrosheet-core" }
 opt-level = 3
 lto = "fat"
 codegen-units = 1
-panic = "abort"
+# Unwind, not abort: a panic inside the file parser is caught and shown as an error.
 strip = true
 
 # Fast iteration but quick enough to judge scrolling in debug builds
