@@ -39,8 +39,8 @@ Measured on a desktop PC with Windows 11, release build:
 | | |
 | --- | --- |
 | Window visible | < 300 ms |
-| Open a 100 000 × 30 `.xlsx` (11.7 MB) | 1.4 s |
-| Search 3 million cells, first / again | 190 ms / 37 ms |
+| Open a 100 000 × 30 `.xlsx` (11.7 MB): first rows / whole sheet | 11 ms / 0.73 s |
+| Search 3 million cells | 45 ms (index built in the background after loading) |
 | Download size | single 6.9 MB `.exe`, no installer |
 
 Reproduce with `cargo run --release -p ferrosheet-core --example gen_big` and

@@ -1,5 +1,7 @@
-//! A loaded worksheet: a dense row-major grid with precomputed display text.
+//! A loaded worksheet: a dense row-major grid. Display text is made on demand, so
+//! loading a big sheet does not format millions of cells nobody looks at.
 
+use std::borrow::Cow;
 use std::sync::OnceLock;
 
 use crate::{CellValue, Locale};
@@ -11,7 +13,7 @@ pub struct Sheet {
     pub rows: u32,
     pub cols: u32,
     cells: Vec<CellValue>,
-    display: Vec<Box<str>>,
+    locale: Locale,
     /// Lower-cased display text, built on first search.
     lower: OnceLock<Vec<Box<str>>>,
 }
@@ -27,8 +29,8 @@ impl Sheet {
         }
     }
 
-    /// Builds a sheet from row-major cells (`cells.len() == rows * cols`), with the
-    /// display text in `locale`.
+    /// Builds a sheet from row-major cells (`cells.len() == rows * cols`), shown in
+    /// `locale`.
     pub fn from_cells(
         name: String,
         rows: u32,
@@ -37,16 +39,12 @@ impl Sheet {
         locale: Locale,
     ) -> Sheet {
         debug_assert_eq!(cells.len(), rows as usize * cols as usize);
-        let display = cells
-            .iter()
-            .map(|c| c.format(locale).into_boxed_str())
-            .collect();
         Sheet {
             name,
             rows,
             cols,
             cells,
-            display,
+            locale,
             lower: OnceLock::new(),
         }
     }
@@ -61,16 +59,28 @@ impl Sheet {
     }
 
     /// The display text at `(r, c)`, `""` outside the used range.
-    pub fn display(&self, r: u32, c: u32) -> &str {
-        self.index(r, c).map_or("", |i| &self.display[i])
+    pub fn display(&self, r: u32, c: u32) -> Cow<'_, str> {
+        match self.value(r, c) {
+            CellValue::Text(s) => Cow::Borrowed(s),
+            v => Cow::Owned(v.format(self.locale)),
+        }
+    }
+
+    /// Builds the search index now (e.g. on a background thread right after loading),
+    /// so the first search is as fast as every later one.
+    pub fn prepare_search(&self) {
+        self.lower();
     }
 
     /// Lower-cased display text of all cells, row-major. Built once.
     pub(crate) fn lower(&self) -> &[Box<str>] {
         self.lower.get_or_init(|| {
-            self.display
+            self.cells
                 .iter()
-                .map(|s| s.to_lowercase().into_boxed_str())
+                .map(|v| match v {
+                    CellValue::Text(s) => s.to_lowercase().into_boxed_str(),
+                    v => v.format(self.locale).to_lowercase().into_boxed_str(),
+                })
                 .collect()
         })
     }

@@ -214,7 +214,7 @@ pub fn show(
                             }
                         };
                         let line_text = if tall {
-                            text
+                            &*text
                         } else {
                             text.lines().next().unwrap_or("")
                         };
@@ -501,11 +501,15 @@ fn header_select(
 fn autofit(ui: &egui::Ui, sheet: &Sheet, c: u32, font: &FontId) -> f32 {
     // Counting characters is cheap, laying out text is not: look at every line of every
     // row, then measure only the ones with the most characters.
-    let mut lines: Vec<(usize, &str)> = (0..sheet.rows)
-        .flat_map(|r| sheet.display(r, c).lines())
-        .map(|l| (l.chars().count(), l))
-        .filter(|(n, _)| *n > 0)
-        .collect();
+    let mut lines: Vec<(usize, String)> = Vec::new();
+    for r in 0..sheet.rows {
+        for l in sheet.display(r, c).lines() {
+            let n = l.chars().count();
+            if n > 0 {
+                lines.push((n, l.to_owned()));
+            }
+        }
+    }
     if lines.len() > AUTOFIT_CANDIDATES {
         lines.select_nth_unstable_by(AUTOFIT_CANDIDATES, |a, b| b.0.cmp(&a.0));
         lines.truncate(AUTOFIT_CANDIDATES);
@@ -514,7 +518,7 @@ fn autofit(ui: &egui::Ui, sheet: &Sheet, c: u32, font: &FontId) -> f32 {
         .iter()
         .map(|(_, l)| {
             ui.painter()
-                .layout_no_wrap((*l).to_owned(), font.clone(), Color32::WHITE)
+                .layout_no_wrap(l.clone(), font.clone(), Color32::WHITE)
                 .size()
                 .x
         })
@@ -532,7 +536,7 @@ fn autofit_row(ui: &egui::Ui, sheet: &Sheet, r: u32, font: &FontId) -> f32 {
         .filter(|t| t.contains('\n'))
         .map(|t| {
             ui.painter()
-                .layout_no_wrap(t.to_owned(), font.clone(), Color32::WHITE)
+                .layout_no_wrap(t.into_owned(), font.clone(), Color32::WHITE)
                 .size()
                 .y
         })

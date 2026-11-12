@@ -95,7 +95,7 @@ pub fn copy_text(sheet: &Sheet, sel: &Selection, f: CopyFormat) -> String {
                 out.push('\t');
             }
             match f {
-                CopyFormat::Display => push_cell(&mut out, sheet.display(r, c)),
+                CopyFormat::Display => push_cell(&mut out, &sheet.display(r, c)),
                 CopyFormat::Invariant => {
                     push_cell(&mut out, &sheet.value(r, c).format(Locale::Invariant))
                 }

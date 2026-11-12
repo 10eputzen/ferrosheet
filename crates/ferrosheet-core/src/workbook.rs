@@ -7,6 +7,9 @@ use std::io::BufReader;
 use std::path::{Path, PathBuf};
 
 use calamine::{CellErrorType, Data, ExcelDateTime, Reader, Sheets, open_workbook_auto};
+
+/// Rows in the early preview of a big `.xlsx` sheet (see [`Workbook::load_sheet_with_preview`]).
+pub const PREVIEW_ROWS: u32 = 200;
 use chrono::NaiveDate;
 
 use crate::{CellError, CellValue, Locale, Sheet};
@@ -90,6 +93,67 @@ impl Workbook {
             cells[idx] = convert(data);
         }
         Ok(Sheet::from_cells(name, rows, cols, cells, self.locale))
+    }
+
+    /// Like [`load_sheet`](Self::load_sheet), but for big `.xlsx` sheets calls `preview`
+    /// with the first [`PREVIEW_ROWS`] rows as soon as they are read, so the first screen
+    /// can be shown long before the whole sheet is parsed. Other formats load as usual.
+    pub fn load_sheet_with_preview(
+        &mut self,
+        idx: usize,
+        preview: impl FnOnce(Sheet),
+    ) -> Result<Sheet, LoadError> {
+        let name = self.sheet_name(idx)?;
+        let locale = self.locale;
+        let Sheets::Xlsx(xlsx) = &mut self.inner else {
+            return self.load_sheet(idx);
+        };
+        let streamed = guard(|| {
+            let mut reader = xlsx
+                .worksheet_cells_reader(&name)
+                .map_err(|e| LoadError::Format(e.to_string()))?;
+            let end = reader.dimensions().end;
+            let (rows, cols) = (end.0 + 1, end.1 + 1);
+            if rows <= PREVIEW_ROWS || u64::from(rows) * u64::from(cols) > 200_000_000 {
+                return Ok(None); // small sheet or implausible size: the normal path
+            }
+            let mut cells = vec![CellValue::Empty; rows as usize * cols as usize];
+            let mut preview = Some(preview);
+            while let Some(cell) = reader
+                .next_cell()
+                .map_err(|e| LoadError::Format(e.to_string()))?
+            {
+                let (r, c) = cell.get_position();
+                if r >= rows || c >= cols {
+                    return Ok(None); // the declared size was wrong: the normal path
+                }
+                if r >= PREVIEW_ROWS
+                    && let Some(send) = preview.take()
+                {
+                    let first = cells[..(PREVIEW_ROWS * cols) as usize].to_vec();
+                    send(Sheet::from_cells(
+                        name.clone(),
+                        PREVIEW_ROWS,
+                        cols,
+                        first,
+                        locale,
+                    ));
+                }
+                cells[r as usize * cols as usize + c as usize] =
+                    convert(&Data::from(cell.get_value().clone()));
+            }
+            Ok(Some(Sheet::from_cells(
+                name.clone(),
+                rows,
+                cols,
+                cells,
+                locale,
+            )))
+        })?;
+        match streamed {
+            Some(sheet) => Ok(sheet),
+            None => self.load_sheet(idx),
+        }
     }
 
     /// Formulas of sheet `idx`, keyed by `(row, col)`, always starting with `=`.

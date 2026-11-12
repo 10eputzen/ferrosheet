@@ -5,6 +5,8 @@ use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, Sender, channel};
 
 use eframe::egui;
+use std::sync::Arc;
+
 use ferrosheet_core::{Sheet, Workbook};
 
 pub enum LoadMsg {
@@ -13,7 +15,7 @@ pub enum LoadMsg {
     },
     Sheet {
         idx: usize,
-        sheet: Sheet,
+        sheet: Arc<Sheet>,
     },
     Formulas {
         idx: usize,
@@ -60,8 +62,22 @@ impl Loader {
                     continue;
                 }
                 loaded[idx] = true;
-                match wb.load_sheet(idx) {
-                    Ok(sheet) => send(LoadMsg::Sheet { idx, sheet }),
+                match wb.load_sheet_with_preview(idx, |p| {
+                    send(LoadMsg::Sheet {
+                        idx,
+                        sheet: Arc::new(p),
+                    })
+                }) {
+                    Ok(sheet) => {
+                        let sheet = Arc::new(sheet);
+                        send(LoadMsg::Sheet {
+                            idx,
+                            sheet: Arc::clone(&sheet),
+                        });
+                        // The sheet is already on screen; meanwhile build the search
+                        // index so the first search is instant.
+                        sheet.prepare_search();
+                    }
                     Err(e) => {
                         send(LoadMsg::Error {
                             sheet: Some(idx),

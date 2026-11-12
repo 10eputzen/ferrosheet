@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use ferrosheet_core::{LoadError, Locale, Workbook, column_name};
+use ferrosheet_core::{LoadError, Locale, PREVIEW_ROWS, Workbook, column_name};
 use rust_xlsxwriter::{ExcelDateTime, Format};
 
 fn fixture(name: &str) -> PathBuf {
@@ -143,4 +143,32 @@ fn column_names() {
     assert_eq!(column_name(26), "AA");
     assert_eq!(column_name(701), "ZZ");
     assert_eq!(column_name(702), "AAA");
+}
+
+#[test]
+fn big_xlsx_sends_a_preview_of_the_first_rows_then_the_whole_sheet() {
+    let rows = PREVIEW_ROWS + 100;
+    let path = xlsx("preview.xlsx", |wb| {
+        let ws = wb.add_worksheet();
+        for r in 0..rows {
+            ws.write_number(r, 0, f64::from(r)).unwrap();
+            ws.write_string(r, 1, format!("row {r}")).unwrap();
+        }
+    });
+    let mut wb = Workbook::open(&path, Locale::Invariant).unwrap();
+    let mut preview = None;
+    let full = wb
+        .load_sheet_with_preview(0, |p| preview = Some(p))
+        .unwrap();
+    let preview = preview.expect("a preview for a big sheet");
+    assert_eq!((preview.rows, preview.cols), (PREVIEW_ROWS, 2));
+    assert_eq!(preview.display(PREVIEW_ROWS - 1, 1), "row 199");
+    assert_eq!((full.rows, full.cols), (rows, 2));
+    assert_eq!(full.display(rows - 1, 0), "299");
+
+    // small sheets come in one piece
+    let mut small = Workbook::open(&fixture("demo.xlsx"), Locale::Invariant).unwrap();
+    let mut called = false;
+    small.load_sheet_with_preview(0, |_| called = true).unwrap();
+    assert!(!called);
 }

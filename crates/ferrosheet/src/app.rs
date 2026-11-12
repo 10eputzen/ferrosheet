@@ -2,6 +2,7 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use eframe::egui::{self, Event, Key, Modifiers, ViewportCommand};
 use ferrosheet_core::{
@@ -17,7 +18,7 @@ const LIVE_SEARCH_MAX_CELLS: u64 = 200_000;
 const STATUS_SECS: f64 = 2.0;
 
 struct SheetView {
-    sheet: Sheet,
+    sheet: Arc<Sheet>,
     formulas: HashMap<(u32, u32), String>,
     grid: GridState,
 }
@@ -122,11 +123,18 @@ impl App {
                     doc.names = names;
                 }
                 LoadMsg::Sheet { idx, sheet } => {
-                    doc.sheets[idx] = Some(SheetView {
-                        sheet,
-                        formulas: HashMap::new(),
-                        grid: GridState::default(),
-                    });
+                    // A big sheet arrives twice: first a preview of its top rows, then
+                    // in full. Keep the view (selection, scroll, widths) when it grows.
+                    match &mut doc.sheets[idx] {
+                        Some(v) => v.sheet = sheet,
+                        slot => {
+                            *slot = Some(SheetView {
+                                sheet,
+                                formulas: HashMap::new(),
+                                grid: GridState::default(),
+                            })
+                        }
+                    }
                     self.search.dirty = true;
                 }
                 LoadMsg::Formulas { idx, map } => {
@@ -140,7 +148,7 @@ impl App {
                     msg,
                 } => {
                     doc.sheets[idx] = Some(SheetView {
-                        sheet: Sheet::empty(doc.names[idx].clone()),
+                        sheet: Arc::new(Sheet::empty(doc.names[idx].clone())),
                         formulas: HashMap::new(),
                         grid: GridState::default(),
                     });
@@ -423,7 +431,7 @@ impl App {
                         .formulas
                         .get(&(cur.row, cur.col))
                         .cloned()
-                        .unwrap_or_else(|| v.sheet.display(cur.row, cur.col).to_owned());
+                        .unwrap_or_else(|| v.sheet.display(cur.row, cur.col).into_owned());
                     ui.separator();
                     ui.monospace(cell_address(cur.row, cur.col));
                     let mut s = content.as_str();

@@ -31,12 +31,13 @@ pub enum CellError {
 }
 
 /// How values are turned into text.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum Locale {
     /// German: decimal comma, `TT.MM.JJJJ`, `WAHR`/`FALSCH`, `#NV`.
     German,
     /// Locale-neutral (also the English display): decimal point, ISO dates,
     /// `TRUE`/`FALSE`, `#N/A`.
+    #[default]
     Invariant,
 }
 
