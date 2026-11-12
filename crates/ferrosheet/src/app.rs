@@ -72,7 +72,7 @@ impl App {
         let start = std::time::Instant::now();
         while self.active_view().is_none() && start.elapsed().as_secs() < 10 {
             std::thread::sleep(std::time::Duration::from_millis(10));
-            self.receive();
+            self.receive(ctx);
         }
         if let Some(v) = self.active_view() {
             v.grid.selection = Selection {
@@ -113,7 +113,7 @@ impl App {
         }
     }
 
-    fn receive(&mut self) {
+    fn receive(&mut self, ctx: &egui::Context) {
         let Some(doc) = &mut self.doc else { return };
         for msg in doc.loader.poll() {
             match msg {
@@ -134,7 +134,25 @@ impl App {
                         v.formulas = map;
                     }
                 }
-                LoadMsg::Error(e) => self.error = Some(e),
+                // A sheet that failed shows as empty; the dialog says why.
+                LoadMsg::Error {
+                    sheet: Some(idx),
+                    msg,
+                } => {
+                    doc.sheets[idx] = Some(SheetView {
+                        sheet: Sheet::empty(doc.names[idx].clone()),
+                        formulas: HashMap::new(),
+                        grid: GridState::default(),
+                    });
+                    self.error = Some(msg);
+                }
+                // The file could not be opened at all: back to the start screen.
+                LoadMsg::Error { sheet: None, msg } => {
+                    self.doc = None;
+                    self.error = Some(msg);
+                    ctx.send_viewport_cmd(ViewportCommand::Title(text::APP.into()));
+                    return;
+                }
             }
         }
     }
@@ -234,9 +252,10 @@ impl App {
     fn search_bar(&mut self, ui: &mut egui::Ui) {
         let large = self.large_sheet();
         ui.horizontal(|ui| {
-            ui.label(text::SEARCH);
-            let resp =
-                ui.add(egui::TextEdit::singleline(&mut self.search.query).desired_width(240.0));
+            let label = ui.label(text::SEARCH);
+            let resp = ui
+                .add(egui::TextEdit::singleline(&mut self.search.query).desired_width(240.0))
+                .labelled_by(label.id);
             if std::mem::take(&mut self.search.focus) {
                 resp.request_focus();
             }
@@ -476,7 +495,7 @@ impl eframe::App for App {
         let ctx = ui.ctx().clone();
         #[cfg(feature = "screenshot")]
         screenshot(&ctx);
-        self.receive();
+        self.receive(&ctx);
 
         let dropped = ctx.input(|i| i.raw.dropped_files.first().map(|f| f.path().to_path_buf()));
         if let Some(p) = dropped {
@@ -550,4 +569,205 @@ fn screenshot(ctx: &egui::Context) {
             .expect("save screenshot");
         ctx2.send_viewport_cmd(egui::ViewportCommand::Close);
     });
+}
+
+#[cfg(test)]
+mod tests {
+    //! Drive the whole app like a user would: open the demo workbook, press keys,
+    //! copy, search, switch sheets. The loader runs on its own thread, so tests wait
+    //! for it with [`settle`].
+
+    use std::path::{Path, PathBuf};
+    use std::time::{Duration, Instant};
+
+    use eframe::egui::{Event, Key, Modifiers, OutputCommand};
+    use egui_kittest::Harness;
+    use egui_kittest::kittest::Queryable;
+    use ferrosheet_core::{CellPos, Selection};
+
+    use super::App;
+    use crate::text;
+
+    fn demo() -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../ferrosheet-core/tests/fixtures/demo.xlsx")
+    }
+
+    fn open(path: PathBuf) -> Harness<'static, App> {
+        let mut h = Harness::builder()
+            .with_size([900.0, 600.0])
+            .build_eframe(move |cc| App::new(&cc.egui_ctx, Some(path)));
+        settle(&mut h, |app| {
+            app.active_view().is_some_and(|v| !v.formulas.is_empty())
+        });
+        h
+    }
+
+    /// Steps frames until `done` holds; the background loader needs real time.
+    fn settle(h: &mut Harness<'_, App>, mut done: impl FnMut(&mut App) -> bool) {
+        let start = Instant::now();
+        while !done(h.state_mut()) {
+            assert!(
+                start.elapsed() < Duration::from_secs(10),
+                "app did not settle"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+            h.step();
+        }
+        h.run();
+    }
+
+    fn cursor(h: &mut Harness<'_, App>) -> CellPos {
+        h.state_mut().active_view().unwrap().grid.selection.cursor
+    }
+
+    fn copied(h: &Harness<'_, App>) -> Option<String> {
+        h.output()
+            .platform_output
+            .commands
+            .iter()
+            .find_map(|c| match c {
+                OutputCommand::CopyText(t) => Some(t.clone()),
+                _ => None,
+            })
+    }
+
+    #[test]
+    fn opens_the_first_sheet_with_values_and_formulas() {
+        let mut h = open(demo());
+        let doc = h.state().doc.as_ref().unwrap();
+        assert_eq!(doc.names, ["Rechnung", "Übersicht"]);
+        let v = h.state_mut().active_view().unwrap();
+        assert_eq!(v.sheet.display(0, 0), "Artikel");
+        assert_eq!(v.sheet.display(2, 0), "Kabelkanal 2 m");
+        assert_eq!(v.formulas[&(1, 3)], "=B2*C2*(1-G2)");
+        assert_eq!(v.formulas[&(6, 3)], "=SUM(D2:D5)");
+        assert!(h.state().error.is_none());
+    }
+
+    #[test]
+    fn arrow_keys_move_and_shift_extends_the_selection() {
+        let mut h = open(demo());
+        h.key_press(Key::ArrowDown);
+        h.key_press(Key::ArrowRight);
+        h.run();
+        assert_eq!(cursor(&mut h), CellPos::new(1, 1));
+
+        h.key_press_modifiers(Modifiers::SHIFT, Key::ArrowDown);
+        h.key_press_modifiers(Modifiers::SHIFT, Key::ArrowRight);
+        h.run();
+        let sel = h.state_mut().active_view().unwrap().grid.selection;
+        assert_eq!(sel.anchor, CellPos::new(1, 1));
+        assert_eq!(sel.cell_count(), 4);
+
+        h.key_press_modifiers(Modifiers::COMMAND, Key::End);
+        h.run();
+        let (rows, cols) = {
+            let v = h.state_mut().active_view().unwrap();
+            (v.sheet.rows, v.sheet.cols)
+        };
+        assert_eq!(cursor(&mut h), CellPos::new(rows - 1, cols - 1));
+    }
+
+    #[test]
+    fn select_all_and_copy_puts_tab_separated_text_on_the_clipboard() {
+        let mut h = open(demo());
+        h.state_mut().active_view().unwrap().grid.selection = Selection {
+            anchor: CellPos::new(0, 0),
+            cursor: CellPos::new(1, 1),
+        };
+        h.event(Event::Copy);
+        h.step();
+        assert_eq!(
+            copied(&h).as_deref(),
+            Some("Artikel\tMenge\r\nSchrauben M4\t120")
+        );
+
+        h.key_press_modifiers(Modifiers::COMMAND, Key::A);
+        h.run();
+        let v = h.state_mut().active_view().unwrap();
+        let all = u64::from(v.sheet.rows) * u64::from(v.sheet.cols);
+        assert_eq!(v.grid.selection.cell_count(), all);
+    }
+
+    #[test]
+    fn ctrl_page_down_switches_to_the_next_sheet_and_loads_it() {
+        let mut h = open(demo());
+        h.key_press_modifiers(Modifiers::COMMAND, Key::PageDown);
+        settle(&mut h, |app| app.active_view().is_some());
+        assert_eq!(h.state().doc.as_ref().unwrap().active, 1);
+        let v = h.state_mut().active_view().unwrap();
+        assert_eq!(v.sheet.display(0, 0), "Bezug auf das erste Blatt");
+
+        // switching past the last sheet stays on it
+        h.key_press_modifiers(Modifiers::COMMAND, Key::PageDown);
+        h.run();
+        assert_eq!(h.state().doc.as_ref().unwrap().active, 1);
+        h.key_press_modifiers(Modifiers::COMMAND, Key::PageUp);
+        h.run();
+        assert_eq!(h.state().doc.as_ref().unwrap().active, 0);
+    }
+
+    #[test]
+    fn typing_in_the_search_jumps_to_the_hit_and_f3_cycles() {
+        let mut h = open(demo());
+        h.key_press_modifiers(Modifiers::COMMAND, Key::F);
+        h.run();
+        assert!(h.state().search.open);
+        h.event(Event::Text("netz".into()));
+        h.run();
+        assert_eq!(h.state().search.hits.len(), 1);
+        assert_eq!(cursor(&mut h), CellPos::new(3, 0));
+        h.get_by_label(&text::hit_counter(1, 1));
+
+        // a query with several hits: F3 moves on, Shift+F3 back
+        for _ in 0.."netz".len() {
+            h.key_press(Key::Backspace);
+        }
+        h.event(Event::Text("m".into()));
+        h.run();
+        assert_eq!(h.state().search.query, "m");
+        let n = h.state().search.hits.len();
+        assert!(n > 2, "expected several hits, got {n}");
+        let first = cursor(&mut h);
+        h.key_press(Key::Escape); // leave the text field, closes the search
+        h.run();
+        assert!(!h.state().search.open);
+        h.key_press(Key::F3);
+        h.run();
+        assert_ne!(cursor(&mut h), first);
+        h.key_press_modifiers(Modifiers::SHIFT, Key::F3);
+        h.run();
+        assert_eq!(cursor(&mut h), first);
+    }
+
+    #[test]
+    fn a_damaged_file_shows_an_error_instead_of_crashing() {
+        let bytes = std::fs::read(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../ferrosheet-core/tests/fixtures/date.xls"),
+        )
+        .unwrap();
+        let dir = std::env::temp_dir().join("ferrosheet-tests");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("app-damaged.xls");
+        std::fs::write(&path, &bytes[..bytes.len() / 2]).unwrap();
+
+        let mut h = Harness::builder()
+            .with_size([900.0, 600.0])
+            .build_eframe(move |cc| App::new(&cc.egui_ctx, Some(path)));
+        settle(&mut h, |app| app.error.is_some());
+        h.get_by_label(text::LOAD_FAILED);
+        h.get_by_label(text::OK).click();
+        h.run();
+        assert!(h.state().error.is_none());
+    }
+
+    #[test]
+    fn a_missing_file_shows_an_error() {
+        let mut h = Harness::builder()
+            .with_size([900.0, 600.0])
+            .build_eframe(|cc| App::new(&cc.egui_ctx, Some(PathBuf::from("gibt-es-nicht.xlsx"))));
+        settle(&mut h, |app| app.error.is_some());
+        h.get_by_label(text::LOAD_FAILED);
+    }
 }

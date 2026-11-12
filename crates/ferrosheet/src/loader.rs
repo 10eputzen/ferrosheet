@@ -19,7 +19,11 @@ pub enum LoadMsg {
         idx: usize,
         map: HashMap<(u32, u32), String>,
     },
-    Error(String),
+    /// `sheet` is `None` when the file itself could not be opened.
+    Error {
+        sheet: Option<usize>,
+        msg: String,
+    },
 }
 
 /// Handle to the loader thread. Dropping it ends the thread.
@@ -40,7 +44,12 @@ impl Loader {
             };
             let mut wb = match Workbook::open(&path) {
                 Ok(wb) => wb,
-                Err(e) => return send(LoadMsg::Error(e.to_string())),
+                Err(e) => {
+                    return send(LoadMsg::Error {
+                        sheet: None,
+                        msg: e.to_string(),
+                    });
+                }
             };
             send(LoadMsg::Opened {
                 names: wb.sheet_names.clone(),
@@ -54,7 +63,10 @@ impl Loader {
                 match wb.load_sheet(idx) {
                     Ok(sheet) => send(LoadMsg::Sheet { idx, sheet }),
                     Err(e) => {
-                        send(LoadMsg::Error(e.to_string()));
+                        send(LoadMsg::Error {
+                            sheet: Some(idx),
+                            msg: e.to_string(),
+                        });
                         continue;
                     }
                 }
