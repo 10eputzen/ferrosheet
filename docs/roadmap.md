@@ -60,3 +60,8 @@ other formats as a new `.xlsx`. Values and formulas are kept; other formatting f
 may be lost.
 Still open: paste, insert/delete rows and columns, replace, printing/PDF. See
 [feature parity](feature-parity.md).
+
+## Wishlist (collected, not scheduled)
+
+- **Recent files:** list of recently opened files, like Excel's start page or *File → Recent*.
+  Shown on the empty start screen and in a menu; click opens the file, missing files are greyed out.
