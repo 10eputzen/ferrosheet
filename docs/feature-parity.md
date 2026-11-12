@@ -8,7 +8,7 @@ so nobody expects an office suite. ✅ done · 🟡 planned · ❌ out of scope
 | **Open** xls, xlsx, xlsm, xlsb, ods | ✅ | ✅ |
 | Open csv | ✅ | ❌ (any text editor does it) |
 | Start-up and load time | seconds | ✅ window < 300 ms, 100k×30 cells in ~1.4 s |
-| Install size | ~350 MB | ✅ single 5.6 MB exe |
+| Install size | ~350 MB | ✅ single 6.9 MB exe |
 | Multiple sheets, switch with Ctrl+PgUp/PgDn | ✅ | ✅ |
 | Cell values: numbers, text, dates, durations, booleans, errors | ✅ | ✅ |
 | Formulas: show the formula of a cell | ✅ | ✅ (formula bar) |
