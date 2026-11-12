@@ -13,7 +13,8 @@ const HEADER_H: f32 = 22.0;
 const DEFAULT_W: f32 = 100.0;
 const MIN_W: f32 = 20.0;
 const MAX_AUTOFIT_W: f32 = 600.0;
-const AUTOFIT_ROWS: u32 = 1_000;
+/// Lines measured when fitting a column (the ones with the most characters).
+const AUTOFIT_CANDIDATES: usize = 64;
 const PAD: f32 = 4.0;
 const RESIZE_GRAB: f32 = 4.0;
 const MAX_AUTOFIT_H: f32 = 400.0;
@@ -383,13 +384,15 @@ pub fn show(
         .filter(|p| row_hdr.contains(*p))
         .and_then(|p| row_edge(p.y));
 
+    // The press origin is gone once the button is released, so the double-click
+    // (reported on release) takes the edge from where the pointer is.
     if col_resp.double_clicked()
-        && let Some(c) = col_press_edge
+        && let Some(c) = col_resp.interact_pointer_pos().and_then(|p| col_edge(p.x))
     {
         st.col_widths[c as usize] = autofit(ui, sheet, c, &font);
     }
     if row_resp.double_clicked()
-        && let Some(r) = row_press_edge
+        && let Some(r) = row_resp.interact_pointer_pos().and_then(|p| row_edge(p.y))
     {
         let h = autofit_row(ui, sheet, r, &font);
         st.row_heights.set(r, h);
@@ -496,16 +499,22 @@ fn header_select(
 }
 
 fn autofit(ui: &egui::Ui, sheet: &Sheet, c: u32, font: &FontId) -> f32 {
-    let widest = (0..sheet.rows.min(AUTOFIT_ROWS))
-        .map(|r| sheet.display(r, c))
-        .filter(|t| !t.is_empty())
-        .map(|t| {
+    // Counting characters is cheap, laying out text is not: look at every line of every
+    // row, then measure only the ones with the most characters.
+    let mut lines: Vec<(usize, &str)> = (0..sheet.rows)
+        .flat_map(|r| sheet.display(r, c).lines())
+        .map(|l| (l.chars().count(), l))
+        .filter(|(n, _)| *n > 0)
+        .collect();
+    if lines.len() > AUTOFIT_CANDIDATES {
+        lines.select_nth_unstable_by(AUTOFIT_CANDIDATES, |a, b| b.0.cmp(&a.0));
+        lines.truncate(AUTOFIT_CANDIDATES);
+    }
+    let widest = lines
+        .iter()
+        .map(|(_, l)| {
             ui.painter()
-                .layout_no_wrap(
-                    t.lines().next().unwrap_or("").to_owned(),
-                    font.clone(),
-                    Color32::WHITE,
-                )
+                .layout_no_wrap((*l).to_owned(), font.clone(), Color32::WHITE)
                 .size()
                 .x
         })
@@ -583,9 +592,13 @@ mod tests {
     /// Grid with a 5×5 sheet; the state also records where the grid starts on screen.
     fn harness() -> Harness<'static, (GridState, egui::Pos2)> {
         let cells = (0..25).map(|i| CellValue::Number(i as f64)).collect();
-        let sheet = Sheet::from_cells("t".into(), 5, 5, cells);
+        harness_for(Sheet::from_cells("t".into(), 5, 5, cells))
+    }
+
+    fn harness_for(sheet: Sheet) -> Harness<'static, (GridState, egui::Pos2)> {
         Harness::builder()
             .with_size(vec2(800.0, 600.0))
+            .with_step_dt(1.0 / 60.0) // real frame time, so double-clicks register
             .build_ui_state(
                 move |ui, (st, origin): &mut (GridState, egui::Pos2)| {
                     *origin = ui.available_rect_before_wrap().min;
@@ -607,6 +620,103 @@ mod tests {
         }
         h.drop_at(from + by);
         h.run();
+    }
+
+    fn double_click(h: &mut Harness<'static, (GridState, egui::Pos2)>, at: egui::Pos2) {
+        h.hover_at(at);
+        h.run();
+        for pressed in [true, false, true, false] {
+            h.event(egui::Event::PointerButton {
+                pos: at,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: egui::Modifiers::NONE,
+            });
+        }
+        h.run();
+    }
+
+    /// One text column, `rows` rows; `texts` puts text into chosen rows.
+    fn text_sheet(rows: u32, texts: &[(u32, &str)]) -> Sheet {
+        let mut cells = vec![CellValue::Empty; rows as usize];
+        for (r, t) in texts {
+            cells[*r as usize] = CellValue::Text((*t).into());
+        }
+        Sheet::from_cells("t".into(), rows, 1, cells)
+    }
+
+    const LONG: &str = "eine deutlich längere zweite Zeile mit viel Text darin";
+
+    #[test]
+    fn double_clicking_a_column_edge_fits_the_longest_line_of_any_row() {
+        // The long line is the second line of a cell, far below the first 1000 rows.
+        let mut h = harness_for(text_sheet(
+            5000,
+            &[
+                (0, "kurz"),
+                (
+                    4500,
+                    &format!(
+                        "x
+{LONG}"
+                    ),
+                ),
+            ],
+        ));
+        h.run();
+        let o = h.state().1;
+        double_click(&mut h, o + vec2(40.0 + DEFAULT_W, HEADER_H / 2.0));
+        let w = h.state().0.col_widths[0];
+        let needed = h.ctx.fonts_mut(|f| {
+            f.layout_no_wrap(
+                LONG.into(),
+                egui::TextStyle::Body.resolve(&egui::Style::default()),
+                Color32::WHITE,
+            )
+            .size()
+            .x
+        });
+        assert!(
+            w >= needed + 2.0 * PAD && w < needed + 4.0 * PAD + 4.0,
+            "width {w}, text {needed}"
+        );
+    }
+
+    #[test]
+    fn double_clicking_a_column_edge_shrinks_a_narrow_column() {
+        let mut h = harness_for(text_sheet(3, &[(0, "ab")]));
+        h.run();
+        let o = h.state().1;
+        double_click(&mut h, o + vec2(40.0 + DEFAULT_W, HEADER_H / 2.0));
+        let w = h.state().0.col_widths[0];
+        assert!(w < DEFAULT_W / 2.0, "width {w}");
+    }
+
+    #[test]
+    fn double_clicking_a_row_edge_fits_all_lines_and_back_to_default() {
+        let mut h = harness_for(text_sheet(
+            3,
+            &[
+                (
+                    0,
+                    "eins
+zwei
+drei",
+                ),
+                (1, "eine Zeile"),
+            ],
+        ));
+        h.run();
+        let o = h.state().1;
+        double_click(&mut h, o + vec2(20.0, HEADER_H + ROW_H));
+        let tall = h.state().0.row_heights.height(0);
+        assert!(tall > 2.0 * ROW_H, "height {tall}"); // three lines of text
+
+        // a single-line row that was made taller goes back to the default height
+        h.state_mut().0.row_heights.set(1, 80.0);
+        h.run_steps(60); // a second apart, or egui counts a triple-click
+        double_click(&mut h, o + vec2(20.0, HEADER_H + tall + 80.0));
+        assert_eq!(h.state().0.row_heights.height(1), ROW_H);
     }
 
     // Row header is 40 px wide (4 digits), columns 100 px, rows 22 px.
