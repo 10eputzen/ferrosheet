@@ -54,10 +54,11 @@ jobs:
       - name: Screenshot (Linux)
         if: runner.os == 'Linux'
         run: |
+          # Same target dir as the release build: only the app crate is rebuilt.
           cargo run -q --release -p ferrosheet-core --example gen_big target/small.xlsx 200 8
-          cargo build --release -p ferrosheet --features screenshot --target-dir target/shot
+          cargo build --release -p ferrosheet --features screenshot
           FERROSHEET_SCREENSHOT=$PWD/screenshot-linux.png FERROSHEET_SEARCH="kunde 1" \
-            timeout 60 xvfb-run -s "-screen 0 1280x900x24" target/shot/release/ferrosheet target/small.xlsx
+            timeout 60 xvfb-run -s "-screen 0 1280x900x24" target/release/ferrosheet target/small.xlsx
       - uses: actions/upload-artifact@v7
         if: runner.os == 'Linux'
         with:
