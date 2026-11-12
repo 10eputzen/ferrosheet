@@ -8,6 +8,7 @@ mod loader;
 mod register;
 mod rows;
 mod text;
+mod update;
 
 use eframe::egui;
 
@@ -37,6 +38,7 @@ fn main() -> eframe::Result {
             return Ok(());
         }
     }
+    update::clean_up();
     let path = arg.map(std::path::PathBuf::from);
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()

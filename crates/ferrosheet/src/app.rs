@@ -3,6 +3,7 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::mpsc::{self, Receiver, TryRecvError};
 
 use eframe::egui::{self, Event, Key, Modifiers, ViewportCommand};
 use ferrosheet_core::{
@@ -12,6 +13,7 @@ use ferrosheet_core::{
 use crate::grid::{self, GridState};
 use crate::loader::{LoadMsg, Loader};
 use crate::text;
+use crate::update;
 
 /// Above this many cells the search runs on Enter instead of while typing.
 const LIVE_SEARCH_MAX_CELLS: u64 = 200_000;
@@ -24,6 +26,7 @@ struct SheetView {
 }
 
 struct Doc {
+    path: PathBuf,
     loader: Loader,
     names: Vec<String>,
     sheets: Vec<Option<SheetView>>,
@@ -43,16 +46,31 @@ struct Search {
 }
 
 #[derive(Default)]
+enum Update {
+    #[default]
+    None,
+    Checking(Receiver<String>),
+    Available(String),
+    Installing(Receiver<Result<(), String>>),
+}
+
+#[derive(Default)]
 pub struct App {
     doc: Option<Doc>,
     error: Option<String>,
+    /// Heading of the error dialog when it is not about loading a file.
+    error_title: Option<&'static str>,
     search: Search,
     status: Option<(String, f64)>,
+    update: Update,
 }
 
 impl App {
     pub fn new(ctx: &egui::Context, path: Option<PathBuf>) -> Self {
         let mut app = App::default();
+        if let Some(rx) = update::check(ctx.clone()) {
+            app.update = Update::Checking(rx);
+        }
         if let Some(p) = path {
             app.open(ctx, p);
         }
@@ -95,6 +113,7 @@ impl App {
             .unwrap_or_default();
         ctx.send_viewport_cmd(ViewportCommand::Title(format!("{name} – {}", text::APP)));
         self.doc = Some(Doc {
+            path: path.clone(),
             loader: Loader::open(path, ctx.clone()),
             names: Vec::new(),
             sheets: Vec::new(),
@@ -447,6 +466,7 @@ impl App {
 
     fn bottom_bar(&mut self, ui: &mut egui::Ui) {
         let now = ui.input(|i| i.time);
+        let mut start_update = false;
         egui::Panel::bottom("tabs").show(ui, |ui| {
             ui.horizontal(|ui| {
                 let mut switch = None;
@@ -467,9 +487,20 @@ impl App {
                 if let Some(i) = switch {
                     self.switch_sheet(i);
                 }
-                ui.with_layout(
-                    egui::Layout::right_to_left(egui::Align::Center),
-                    |ui| match &self.status {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    match &self.update {
+                        Update::Available(v) => {
+                            start_update = ui.link(text::update_available(v)).clicked();
+                            ui.separator();
+                        }
+                        Update::Installing(_) => {
+                            ui.weak(text::updating());
+                            ui.spinner();
+                            ui.separator();
+                        }
+                        _ => {}
+                    }
+                    match &self.status {
                         Some((msg, t)) if now - t < STATUS_SECS => {
                             ui.label(msg);
                             ui.ctx()
@@ -485,23 +516,75 @@ impl App {
                                 }
                             }
                         }
-                    },
-                );
+                    }
+                });
             });
         });
+        if start_update {
+            self.start_update(ui.ctx());
+        }
+    }
+
+    fn poll_update(&mut self, ctx: &egui::Context) {
+        let result = match &self.update {
+            Update::Checking(rx) => match rx.try_recv() {
+                Ok(v) => Some(Update::Available(v)),
+                Err(TryRecvError::Disconnected) => Some(Update::None),
+                Err(TryRecvError::Empty) => None,
+            },
+            Update::Installing(rx) => match rx.try_recv() {
+                Ok(Ok(())) => {
+                    let file = self.doc.as_ref().map(|d| d.path.as_path());
+                    match update::restart(file) {
+                        Ok(()) => ctx.send_viewport_cmd(ViewportCommand::Close),
+                        Err(e) => self.update_failed(e),
+                    }
+                    Some(Update::None)
+                }
+                Ok(Err(e)) => {
+                    self.update_failed(e);
+                    Some(Update::None)
+                }
+                Err(TryRecvError::Disconnected) => Some(Update::None),
+                Err(TryRecvError::Empty) => None,
+            },
+            _ => None,
+        };
+        if let Some(u) = result {
+            self.update = u;
+        }
+    }
+
+    fn start_update(&mut self, ctx: &egui::Context) {
+        let Update::Available(v) = &self.update else {
+            return;
+        };
+        let (tx, rx) = mpsc::channel();
+        let (v, ctx) = (v.clone(), ctx.clone());
+        std::thread::spawn(move || {
+            let _ = tx.send(update::install(&v));
+            ctx.request_repaint();
+        });
+        self.update = Update::Installing(rx);
+    }
+
+    fn update_failed(&mut self, e: String) {
+        self.error = Some(e);
+        self.error_title = Some(text::update_failed());
     }
 
     fn error_modal(&mut self, ctx: &egui::Context) {
         let Some(err) = &self.error else { return };
         let resp = egui::Modal::new(egui::Id::unique("error")).show(ctx, |ui| {
             ui.set_max_width(420.0);
-            ui.heading(text::load_failed());
+            ui.heading(self.error_title.unwrap_or_else(text::load_failed));
             ui.label(err);
             ui.add_space(8.0);
             ui.button(text::ok()).clicked()
         });
         if resp.inner || resp.should_close() {
             self.error = None;
+            self.error_title = None;
         }
     }
 }
@@ -512,6 +595,7 @@ impl eframe::App for App {
         #[cfg(feature = "screenshot")]
         screenshot(&ctx);
         self.receive(&ctx);
+        self.poll_update(&ctx);
 
         let dropped = ctx.input(|i| i.raw.dropped_files.first().map(|f| f.path().to_path_buf()));
         if let Some(p) = dropped {

@@ -58,6 +58,11 @@ Download the latest build from [Releases](https://github.com/10eputzen/ferroshee
   Built on Ubuntu 22.04, needs an X11 or Wayland desktop with OpenGL.
 - **macOS:** not yet, see the [roadmap](docs/roadmap.md#platforms).
 
+**Updates:** at start ferrosheet asks GitHub for the latest release tag, in the background and
+nothing else is sent. If there is a newer version, the status bar offers it; one click
+downloads it, replaces the exe and reopens the current file. Set `FERROSHEET_NO_UPDATE=1` to
+turn the check off. Needs Windows 11 or a Linux with `curl` and `tar`.
+
 From source, with Rust installed:
 
 ```bash
