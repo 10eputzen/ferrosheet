@@ -7,7 +7,8 @@ use eframe::egui::{
 };
 use ferrosheet_core::{CellPos, CellValue, Selection, Sheet, column_name};
 
-pub const ROW_H: f32 = 22.0;
+use crate::rows::{ROW_H, RowHeights};
+
 const HEADER_H: f32 = 22.0;
 const DEFAULT_W: f32 = 100.0;
 const MIN_W: f32 = 20.0;
@@ -15,6 +16,9 @@ const MAX_AUTOFIT_W: f32 = 600.0;
 const AUTOFIT_ROWS: u32 = 1_000;
 const PAD: f32 = 4.0;
 const RESIZE_GRAB: f32 = 4.0;
+const MAX_AUTOFIT_H: f32 = 400.0;
+/// Top padding for text in rows taller than the default.
+const TEXT_TOP: f32 = 3.0;
 
 /// Per-sheet view state.
 #[derive(Default)]
@@ -25,8 +29,16 @@ pub struct GridState {
     pub scroll_to: Option<CellPos>,
     /// Visible body size of the last frame (for page up/down).
     pub view: Vec2,
+    pub row_heights: RowHeights,
     offset: Vec2,
-    resizing: Option<u32>,
+    resizing: Option<Resize>,
+}
+
+/// Header edge being dragged.
+#[derive(Clone, Copy)]
+enum Resize {
+    Col(u32),
+    Row(u32),
 }
 
 impl GridState {
@@ -99,7 +111,8 @@ pub fn show(
         st.col_widths.resize(cols as usize, DEFAULT_W);
     }
     let xs = prefix(&st.col_widths[..cols as usize]);
-    let total = vec2(xs[cols as usize], rows as f32 * ROW_H);
+    let rh = &st.row_heights;
+    let total = vec2(xs[cols as usize], rh.top(rows));
 
     let visuals = ui.visuals().clone();
     let pal = Palette::new(&visuals);
@@ -112,7 +125,7 @@ pub fn show(
     // --- body ---------------------------------------------------------------
     let mut area = ScrollArea::both().id_salt("grid").auto_shrink(false);
     if let Some(target) = st.scroll_to.take() {
-        area = area.scroll_offset(offset_to_show(target, &xs, st.offset, body.size()));
+        area = area.scroll_offset(offset_to_show(target, &xs, rh, st.offset, body.size()));
     }
     let shift = ui.input(|i| i.modifiers.shift);
     let out = ui
@@ -121,13 +134,13 @@ pub fn show(
                 let (rect, resp) = ui.allocate_exact_size(total, Sense::click_and_drag());
                 let origin = rect.min;
                 let painter = ui.painter_at(ui.clip_rect());
-                let (r0, r1) = visible_range(vp.min.y, vp.max.y, rows);
+                let (r0, r1) = visible_range(vp.min.y, vp.max.y, rows, rh);
                 let c0 = xs.partition_point(|&x| x <= vp.min.x).saturating_sub(1) as u32;
                 let c1 = (xs.partition_point(|&x| x < vp.max.x) as u32).min(cols);
                 let cell_rect = |r: u32, c: u32| {
                     Rect::from_min_size(
-                        origin + vec2(xs[c as usize], r as f32 * ROW_H),
-                        vec2(st.col_widths[c as usize], ROW_H),
+                        origin + vec2(xs[c as usize], rh.top(r)),
+                        vec2(st.col_widths[c as usize], rh.height(r)),
                     )
                 };
 
@@ -155,8 +168,8 @@ pub fn show(
                 }
 
                 // grid lines
-                let top = origin.y + r0 as f32 * ROW_H;
-                let bottom = origin.y + r1 as f32 * ROW_H;
+                let top = origin.y + rh.top(r0);
+                let bottom = origin.y + rh.top(r1);
                 let left = origin.x + xs[c0 as usize];
                 let right = origin.x + xs[c1 as usize];
                 for c in c0..=c1 {
@@ -164,7 +177,7 @@ pub fn show(
                     painter.line_segment([pos2(x, top), pos2(x, bottom)], pal.col_line);
                 }
                 for r in r0..=r1 {
-                    let y = origin.y + r as f32 * ROW_H - 0.5;
+                    let y = origin.y + rh.top(r) - 0.5;
                     painter.line_segment([pos2(left, y), pos2(right, y)], pal.row_line);
                 }
 
@@ -182,13 +195,28 @@ pub fn show(
                             pal.text
                         };
                         let rect = cell_rect(r, c);
-                        let (anchor, pos) = if value.is_numeric() {
-                            (Align2::RIGHT_CENTER, rect.right_center() - vec2(PAD, 0.0))
-                        } else {
-                            (Align2::LEFT_CENTER, rect.left_center() + vec2(PAD, 0.0))
+                        // Default rows show the first line centred; taller rows show
+                        // all lines from the top, clipped to the cell.
+                        let tall = rect.height() > ROW_H + 1.0;
+                        let (anchor, pos) = match (value.is_numeric(), tall) {
+                            (true, false) => {
+                                (Align2::RIGHT_CENTER, rect.right_center() - vec2(PAD, 0.0))
+                            }
+                            (false, false) => {
+                                (Align2::LEFT_CENTER, rect.left_center() + vec2(PAD, 0.0))
+                            }
+                            (true, true) => {
+                                (Align2::RIGHT_TOP, rect.right_top() + vec2(-PAD, TEXT_TOP))
+                            }
+                            (false, true) => {
+                                (Align2::LEFT_TOP, rect.left_top() + vec2(PAD, TEXT_TOP))
+                            }
                         };
-                        // first line only, clipped to the cell
-                        let line_text = text.lines().next().unwrap_or("");
+                        let line_text = if tall {
+                            text
+                        } else {
+                            text.lines().next().unwrap_or("")
+                        };
                         painter
                             .with_clip_rect(rect.shrink(1.0).intersect(painter.clip_rect()))
                             .text(pos, anchor, line_text, font.clone(), color);
@@ -210,7 +238,7 @@ pub fn show(
                 if resp.is_pointer_button_down_on()
                     && let Some(p) = ui.input(|i| i.pointer.interact_pos())
                 {
-                    let cell = cell_at(p - origin, &xs, rows, cols);
+                    let cell = cell_at(p - origin, &xs, rh, rows, cols);
                     if ui.input(|i| i.pointer.primary_pressed()) && !shift {
                         st.selection = Selection::single(cell);
                     } else {
@@ -257,10 +285,12 @@ pub fn show(
 
     let painter = ui.painter_at(row_hdr);
     painter.rect_filled(row_hdr, 0.0, pal.header_bg);
-    let (r0, r1) = visible_range(st.offset.y, st.offset.y + body.height(), rows);
+    let rh = &st.row_heights;
+    let (r0, r1) = visible_range(st.offset.y, st.offset.y + body.height(), rows, rh);
     for r in r0..r1 {
-        let y0 = row_hdr.min.y + r as f32 * ROW_H - st.offset.y;
-        let rect = Rect::from_min_size(pos2(row_hdr.min.x, y0), vec2(row_hdr.width(), ROW_H));
+        let y0 = row_hdr.min.y + rh.top(r) - st.offset.y;
+        let rect =
+            Rect::from_min_size(pos2(row_hdr.min.x, y0), vec2(row_hdr.width(), rh.height(r)));
         if (tl.row..=br.row).contains(&r) {
             painter.rect_filled(rect, 0.0, sel_fill);
         }
@@ -313,35 +343,79 @@ pub fn show(
     let last_row = sheet.rows.max(1) - 1;
     let last_col = sheet.cols.max(1) - 1;
 
-    // column resize: grab the right edge of a header cell
-    let edge_at = |x: f32| -> Option<u32> {
+    // Resize: grab the right edge of a column header or the bottom edge of a row header.
+    // The edge is taken from where the button went down: once the drag threshold is
+    // passed the pointer is already a few pixels away from it.
+    let col_edge = |x: f32| -> Option<u32> {
         let cx = x - col_hdr.min.x + st.offset.x;
         (1..=cols)
             .find(|&c| (xs[c as usize] - cx).abs() <= RESIZE_GRAB)
             .map(|c| c - 1)
     };
-    if let Some(p) = col_resp.hover_pos()
-        && (st.resizing.is_some() || edge_at(p.x).is_some())
-    {
-        ui.ctx().set_cursor_icon(CursorIcon::ResizeHorizontal);
+    let row_edge = |y: f32| -> Option<u32> {
+        let rh = &st.row_heights;
+        let cy = y - row_hdr.min.y + st.offset.y;
+        let r = rh.row_at(cy);
+        if rh.top(r) + rh.height(r) - cy <= RESIZE_GRAB {
+            Some(r)
+        } else if cy - rh.top(r) <= RESIZE_GRAB && r > 0 {
+            Some(r - 1)
+        } else {
+            None
+        }
+    };
+    let col_hover = col_resp.hover_pos().and_then(|p| col_edge(p.x));
+    let row_hover = row_resp.hover_pos().and_then(|p| row_edge(p.y));
+    match (st.resizing, col_hover, row_hover) {
+        (Some(Resize::Col(_)), _, _) | (None, Some(_), _) => {
+            ui.ctx().set_cursor_icon(CursorIcon::ResizeHorizontal)
+        }
+        (Some(Resize::Row(_)), _, _) | (None, _, Some(_)) => {
+            ui.ctx().set_cursor_icon(CursorIcon::ResizeVertical)
+        }
+        _ => {}
     }
+    let press = ui.input(|i| i.pointer.press_origin());
+    let col_press_edge = press
+        .filter(|p| col_hdr.contains(*p))
+        .and_then(|p| col_edge(p.x));
+    let row_press_edge = press
+        .filter(|p| row_hdr.contains(*p))
+        .and_then(|p| row_edge(p.y));
+
     if col_resp.double_clicked()
-        && let Some(c) = col_resp.interact_pointer_pos().and_then(|p| edge_at(p.x))
+        && let Some(c) = col_press_edge
     {
         st.col_widths[c as usize] = autofit(ui, sheet, c, &font);
     }
-    if col_resp.drag_started() {
-        st.resizing = col_resp.interact_pointer_pos().and_then(|p| edge_at(p.x));
+    if row_resp.double_clicked()
+        && let Some(r) = row_press_edge
+    {
+        let h = autofit_row(ui, sheet, r, &font);
+        st.row_heights.set(r, h);
     }
-    if let Some(c) = st.resizing {
-        if col_resp.dragged() {
+    if col_resp.drag_started() {
+        st.resizing = col_press_edge.map(Resize::Col);
+    }
+    if row_resp.drag_started() {
+        st.resizing = row_press_edge.map(Resize::Row);
+    }
+    match st.resizing {
+        Some(Resize::Col(c)) => {
             let w = &mut st.col_widths[c as usize];
             *w = (*w + col_resp.drag_delta().x).max(MIN_W);
         }
-        if col_resp.drag_stopped() {
-            st.resizing = None;
+        Some(Resize::Row(r)) => {
+            let h = st.row_heights.height(r) + row_resp.drag_delta().y;
+            st.row_heights.set(r, h);
         }
-    } else {
+        None => {}
+    }
+    if col_resp.drag_stopped() || row_resp.drag_stopped() {
+        st.resizing = None;
+    }
+    // A press on an edge resizes; anywhere else on a header it selects.
+    if st.resizing.is_none() && col_press_edge.is_none() {
         header_select(
             ui,
             &col_resp,
@@ -356,19 +430,21 @@ pub fn show(
             shift,
         );
     }
-    header_select(
-        ui,
-        &row_resp,
-        Header::Rows,
-        st,
-        &xs,
-        row_hdr,
-        rows,
-        cols,
-        last_row,
-        last_col,
-        shift,
-    );
+    if st.resizing.is_none() && row_press_edge.is_none() {
+        header_select(
+            ui,
+            &row_resp,
+            Header::Rows,
+            st,
+            &xs,
+            row_hdr,
+            rows,
+            cols,
+            last_row,
+            last_col,
+            shift,
+        );
+    }
 
     ui.allocate_rect(full, Sense::hover());
 }
@@ -406,7 +482,10 @@ fn header_select(
             st.selection.anchor.row = 0;
         }
         Header::Rows => {
-            let r = (((p.y - strip.min.y + st.offset.y) / ROW_H) as u32).min(rows - 1);
+            let r = st
+                .row_heights
+                .row_at(p.y - strip.min.y + st.offset.y)
+                .min(rows - 1);
             if pressed && !shift {
                 st.selection.anchor = CellPos::new(r, 0);
             }
@@ -434,6 +513,24 @@ fn autofit(ui: &egui::Ui, sheet: &Sheet, c: u32, font: &FontId) -> f32 {
     (widest + 2.0 * PAD + 2.0).clamp(MIN_W, MAX_AUTOFIT_W)
 }
 
+/// Height that shows every line of the tallest cell in row `r`.
+fn autofit_row(ui: &egui::Ui, sheet: &Sheet, r: u32, font: &FontId) -> f32 {
+    if r >= sheet.rows {
+        return ROW_H;
+    }
+    let tallest = (0..sheet.cols)
+        .map(|c| sheet.display(r, c))
+        .filter(|t| t.contains('\n'))
+        .map(|t| {
+            ui.painter()
+                .layout_no_wrap(t.to_owned(), font.clone(), Color32::WHITE)
+                .size()
+                .y
+        })
+        .fold(0.0, f32::max);
+    (tallest + 2.0 * TEXT_TOP).clamp(ROW_H, MAX_AUTOFIT_H)
+}
+
 fn prefix(widths: &[f32]) -> Vec<f32> {
     let mut xs = Vec::with_capacity(widths.len() + 1);
     xs.push(0.0);
@@ -445,23 +542,22 @@ fn prefix(widths: &[f32]) -> Vec<f32> {
     xs
 }
 
-fn visible_range(top: f32, bottom: f32, rows: u32) -> (u32, u32) {
-    let r0 = ((top / ROW_H).floor().max(0.0) as u32).min(rows);
-    let r1 = ((bottom / ROW_H).ceil().max(0.0) as u32 + 1).min(rows);
-    (r0, r1)
+fn visible_range(top: f32, bottom: f32, rows: u32, rh: &RowHeights) -> (u32, u32) {
+    (rh.row_at(top).min(rows), (rh.row_at(bottom) + 1).min(rows))
 }
 
-fn cell_at(p: Vec2, xs: &[f32], rows: u32, cols: u32) -> CellPos {
-    let r = ((p.y.max(0.0) / ROW_H) as u32).min(rows - 1);
+fn cell_at(p: Vec2, xs: &[f32], rh: &RowHeights, rows: u32, cols: u32) -> CellPos {
+    let r = rh.row_at(p.y).min(rows - 1);
     let c = (xs.partition_point(|&x| x <= p.x.max(0.0)).saturating_sub(1) as u32).min(cols - 1);
     CellPos::new(r, c)
 }
 
 /// Scroll offset that brings `target` fully into view, moving as little as possible.
-fn offset_to_show(target: CellPos, xs: &[f32], offset: Vec2, view: Vec2) -> Vec2 {
+fn offset_to_show(target: CellPos, xs: &[f32], rh: &RowHeights, offset: Vec2, view: Vec2) -> Vec2 {
     let ci = (target.col as usize).min(xs.len().saturating_sub(2));
     let (x0, x1) = (xs[ci], xs[ci + 1]);
-    let (y0, y1) = (target.row as f32 * ROW_H, (target.row + 1) as f32 * ROW_H);
+    let y0 = rh.top(target.row);
+    let y1 = y0 + rh.height(target.row);
     let fit = |lo: f32, hi: f32, off: f32, size: f32| {
         if lo < off {
             lo
@@ -476,4 +572,85 @@ fn offset_to_show(target: CellPos, xs: &[f32], offset: Vec2, view: Vec2) -> Vec2
 
 fn digits(n: u32) -> u32 {
     n.checked_ilog10().unwrap_or(0) + 1
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use egui_kittest::Harness;
+    use ferrosheet_core::CellValue;
+
+    /// Grid with a 5×5 sheet; the state also records where the grid starts on screen.
+    fn harness() -> Harness<'static, (GridState, egui::Pos2)> {
+        let cells = (0..25).map(|i| CellValue::Number(i as f64)).collect();
+        let sheet = Sheet::from_cells("t".into(), 5, 5, cells);
+        Harness::builder()
+            .with_size(vec2(800.0, 600.0))
+            .build_ui_state(
+                move |ui, (st, origin): &mut (GridState, egui::Pos2)| {
+                    *origin = ui.available_rect_before_wrap().min;
+                    show(ui, &sheet, st, &[], None);
+                },
+                (GridState::default(), egui::Pos2::ZERO),
+            )
+    }
+
+    /// Press at `from`, move in small steps by `by`, release.
+    fn drag(h: &mut Harness<'static, (GridState, egui::Pos2)>, from: egui::Pos2, by: Vec2) {
+        h.hover_at(from);
+        h.run();
+        h.drag_at(from);
+        h.run();
+        for i in 1..=5 {
+            h.hover_at(from + by * (i as f32 / 5.0));
+            h.run();
+        }
+        h.drop_at(from + by);
+        h.run();
+    }
+
+    // Row header is 40 px wide (4 digits), columns 100 px, rows 22 px.
+    #[test]
+    fn dragging_a_column_edge_changes_its_width_and_keeps_it() {
+        let mut h = harness();
+        h.run();
+        let o = h.state().1;
+        drag(
+            &mut h,
+            o + vec2(40.0 + DEFAULT_W, HEADER_H / 2.0),
+            vec2(50.0, 0.0),
+        );
+        let w = h.state().0.col_widths[0];
+        assert!(w > DEFAULT_W + 35.0, "width {w}");
+        h.run();
+        assert_eq!(h.state().0.col_widths[0], w);
+        assert_eq!(h.state().0.col_widths[1], DEFAULT_W);
+    }
+
+    #[test]
+    fn dragging_a_row_edge_changes_its_height() {
+        let mut h = harness();
+        h.run();
+        let o = h.state().1;
+        drag(&mut h, o + vec2(20.0, HEADER_H + ROW_H), vec2(0.0, 30.0));
+        let rh = &h.state().0.row_heights;
+        assert!(rh.height(0) > ROW_H + 20.0, "height {}", rh.height(0));
+        assert_eq!(rh.height(1), ROW_H);
+    }
+
+    #[test]
+    fn dragging_inside_a_column_header_selects_columns() {
+        let mut h = harness();
+        h.run();
+        let o = h.state().1;
+        drag(
+            &mut h,
+            o + vec2(40.0 + 50.0, HEADER_H / 2.0),
+            vec2(DEFAULT_W, 0.0),
+        );
+        let st = &h.state().0;
+        assert_eq!(st.col_widths[0], DEFAULT_W);
+        let (tl, br) = st.selection.bounds();
+        assert_eq!((tl.col, br.col, tl.row), (0, 1, 0));
+    }
 }

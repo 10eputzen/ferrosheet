@@ -20,3 +20,6 @@ winreg = "0.56"
 [features]
 # Saves a screenshot when FERROSHEET_SCREENSHOT is set (docs and visual checks).
 screenshot = ["dep:image"]
+
+[dev-dependencies]
+egui_kittest = "0.37"

@@ -4,6 +4,7 @@
 mod app;
 mod grid;
 mod loader;
+mod rows;
 mod text;
 
 use eframe::egui;
