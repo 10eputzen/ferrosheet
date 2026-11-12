@@ -51,19 +51,26 @@ pub fn check(ctx: eframe::egui::Context) -> Option<Receiver<String>> {
 /// Downloads `version` and puts it in place of the running executable.
 pub fn install(version: &str) -> Result<(), String> {
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
-    let dir = std::env::temp_dir().join(format!("ferrosheet-update-{version}"));
+    // Staged next to the exe, not in the shared temp dir: that folder has to be
+    // writable for the swap anyway, and other users cannot plant files in it.
+    let parent = exe.parent().ok_or("no folder for the executable")?;
+    let dir = parent.join(format!(".ferrosheet-update-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    std::fs::create_dir(&dir).map_err(|e| e.to_string())?;
+    let result = download_and_swap(version, &exe, &dir);
+    let _ = std::fs::remove_dir_all(&dir);
+    result
+}
+
+fn download_and_swap(version: &str, exe: &Path, dir: &Path) -> Result<(), String> {
     let archive = dir.join(format!("{ASSET}.{ARCHIVE}"));
     let url = format!("https://github.com/{REPO}/releases/download/v{version}/{ASSET}.{ARCHIVE}");
     run(cmd("curl")
         .args(["-fsSL", "--max-time", "300", "-o"])
         .arg(&archive)
         .arg(&url))?;
-    run(cmd("tar").arg("-xf").arg(&archive).arg("-C").arg(&dir))?;
-    swap(&exe, &dir.join(ASSET).join(BIN)).map_err(|e| e.to_string())?;
-    let _ = std::fs::remove_dir_all(&dir);
-    Ok(())
+    run(cmd("tar").arg("-xf").arg(&archive).arg("-C").arg(dir))?;
+    swap(exe, &dir.join(ASSET).join(BIN)).map_err(|e| e.to_string())
 }
 
 /// Starts the (new) executable with the file that is open now.
