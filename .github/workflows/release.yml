@@ -1,0 +1,78 @@
+name: Release
+
+# Tag v* builds and publishes a release; manual runs only upload the build artifacts.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            name: ferrosheet-windows-x86_64
+          - os: ubuntu-22.04
+            name: ferrosheet-linux-x86_64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Linux build dependencies
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libxkbcommon-dev libgl1-mesa-dev libwayland-dev libx11-dev libxcursor-dev libxrandr-dev libxi-dev xvfb
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --release -p ferrosheet
+
+      - name: Package (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          mkdir -p dist/${{ matrix.name }}
+          cp target/release/ferrosheet dist/${{ matrix.name }}/
+          tar -C dist -czf ${{ matrix.name }}.tar.gz ${{ matrix.name }}
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          mkdir -p dist/${{ matrix.name }}
+          cp target/release/ferrosheet.exe dist/${{ matrix.name }}/
+          cd dist && 7z a ../${{ matrix.name }}.zip ${{ matrix.name }}
+
+      # Smoke test: start the Linux build on a virtual display and save a screenshot.
+      - name: Screenshot (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          cargo run -q --release -p ferrosheet-core --example gen_big target/small.xlsx 200 8
+          cargo build --release -p ferrosheet --features screenshot --target-dir target/shot
+          FERROSHEET_SCREENSHOT=$PWD/screenshot-linux.png FERROSHEET_SEARCH="kunde 1" \
+            timeout 60 xvfb-run -s "-screen 0 1280x900x24" target/shot/release/ferrosheet target/small.xlsx
+      - uses: actions/upload-artifact@v4
+        if: runner.os == 'Linux'
+        with:
+          name: screenshot-linux
+          path: screenshot-linux.png
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.name }}
+          path: ${{ matrix.name }}.*
+
+  publish:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: ferrosheet-*
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: ferrosheet-*
+          generate_release_notes: true
