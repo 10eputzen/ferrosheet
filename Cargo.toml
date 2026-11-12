@@ -14,8 +14,9 @@ ferrosheet-core = { path = "crates/ferrosheet-core" }
 
 [profile.release]
 opt-level = 3
-lto = "fat"
-codegen-units = 1
+# Thin LTO over 16 parallel units: release builds take about half the time of fat LTO
+# with one unit, for a few percent in size and speed.
+lto = "thin"
 # Unwind, not abort: a panic inside the file parser is caught and shown as an error.
 strip = true
 
