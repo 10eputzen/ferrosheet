@@ -12,7 +12,7 @@ Spreadsheet functions (SUM, VLOOKUP, …) have their own list: [function parity]
 | Open xls, xlsx, xlsm, xlsb, ods | ✅ | ✅ |
 | Open csv, tsv | ✅ (import dialog) | ✅ delimiter, encoding and decimals detected, no dialog; codes with leading zeros stay text |
 | Open other formats (Numbers, dbf, html, xml, Lotus) | ✅ | ❌ |
-| Save | all formats | 🟡 phase 2, xlsx and csv |
+| Save | all formats | 🟡 xlsx and csv in place, other formats as `.xlsx` |
 | Export PDF, html | ✅ | ❌ |
 | Password-protected files | ✅ | ❌ |
 | Templates | ✅ | ❌ |
@@ -53,11 +53,11 @@ Spreadsheet functions (SUM, VLOOKUP, …) have their own list: [function parity]
 
 | Feature | LibreOffice Calc | ferrosheet |
 | --- | --- | --- |
-| Edit cells | ✅ | 🟡 phase 2 |
-| Undo, redo | ✅ | 🟡 phase 2 |
+| Edit cells | ✅ | ✅ |
+| Undo, redo | ✅ | ✅ |
 | Paste | ✅ | 🟡 phase 2 |
 | Insert and delete rows, columns, sheets | ✅ | 🟡 phase 2 |
-| Format cells: bold, italic, colour, number format | ✅ | 🟡 phase 2 |
+| Format cells: bold, italic, colour, number format | ✅ | ✅ shown for what is set in ferrosheet |
 | Format cells: fonts, borders, alignment, styles | ✅ | ❌ |
 | Merge cells | ✅ | ❌ |
 | Autofill (drag a series) | ✅ | ❌ |
@@ -69,8 +69,8 @@ Spreadsheet functions (SUM, VLOOKUP, …) have their own list: [function parity]
 | Feature | LibreOffice Calc | ferrosheet |
 | --- | --- | --- |
 | Show the formula of a cell | ✅ | ✅ (formula bar) |
-| Recalculate | ✅ | 🟡 phase 2 via IronCalc, see [function parity](feature-parity-functions.md); phase 1 shows the results stored in the file |
-| Enter formulas | ✅ | 🟡 phase 2 |
+| Recalculate | ✅ | ✅ via IronCalc once editing starts, see [function parity](feature-parity-functions.md); before that the results stored in the file |
+| Enter formulas | ✅ | ✅ in English (`=SUM(A1:A3)`) |
 | Named ranges | ✅ | ❌ |
 | Goal seek, solver, scenarios, what-if tables | ✅ | ❌ |
 | Pivot tables | ✅ | ❌ |

@@ -4,7 +4,7 @@
 
 use std::sync::OnceLock;
 
-use ferrosheet_core::{LoadError, Locale};
+use ferrosheet_core::{LoadError, Locale, NumberFormat};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Lang {
@@ -75,6 +75,25 @@ texts! {
     next_hit: "Nächster Treffer (F3)", "Next match (F3)";
     close_search: "Suche schließen (Esc)", "Close search (Esc)";
     update_failed: "Aktualisierung fehlgeschlagen", "Update failed";
+    save: "Speichern", "Save";
+    save_hint: "Speichern (Strg+S), Speichern unter (Strg+Umschalt+S)",
+        "Save (Ctrl+S), Save as (Ctrl+Shift+S)";
+    saved: "Gespeichert", "Saved";
+    save_failed: "Speichern fehlgeschlagen", "Saving failed";
+    xlsx_filter: "Excel-Arbeitsmappe", "Excel workbook";
+    preparing_edit: "Bearbeiten wird vorbereitet …", "Preparing to edit …";
+    edit_failed: "Bearbeiten nicht möglich", "Editing not possible";
+    unsaved_title: "Ungespeicherte Änderungen", "Unsaved changes";
+    discard: "Verwerfen", "Discard";
+    cancel: "Abbrechen", "Cancel";
+    bold: "F", "B";
+    bold_hint: "Fett (Strg+B)", "Bold (Ctrl+B)";
+    italic: "K", "I";
+    italic_hint: "Kursiv (Strg+I)", "Italic (Ctrl+I)";
+    text_color: "Schriftfarbe", "Text colour";
+    fill_color: "Füllfarbe", "Fill colour";
+    no_color: "Keine", "None";
+    number_format: "Zahlenformat", "Number format";
     #[cfg(windows)]
     file_type: "Tabelle", "Spreadsheet";
     #[cfg(windows)]
@@ -88,6 +107,23 @@ texts! {
         "ferrosheet is no longer associated with spreadsheets.";
     #[cfg(windows)]
     register_failed: "Verknüpfung fehlgeschlagen", "Association failed";
+}
+
+pub fn save_question(file: &str) -> String {
+    match lang() {
+        Lang::De => format!("Änderungen an „{file}“ speichern?"),
+        Lang::En => format!("Save changes to \"{file}\"?"),
+    }
+}
+
+pub fn number_format_name(f: NumberFormat) -> &'static str {
+    match f {
+        NumberFormat::General => pick("Standard", "General"),
+        NumberFormat::Decimal2 => pick("Zahl (0,00)", "Number (0.00)"),
+        NumberFormat::Currency => pick("Währung (€)", "Currency (€)"),
+        NumberFormat::Percent => pick("Prozent", "Percent"),
+        NumberFormat::Date => pick("Datum", "Date"),
+    }
 }
 
 pub fn hit_counter(current: usize, total: usize) -> String {

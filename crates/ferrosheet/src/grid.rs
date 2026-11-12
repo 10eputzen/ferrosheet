@@ -2,10 +2,10 @@
 //! Only the visible cells are painted, so scrolling cost is independent of sheet size.
 
 use eframe::egui::{
-    self, Align2, Color32, CursorIcon, FontId, Rect, ScrollArea, Sense, Stroke, UiBuilder, Vec2,
-    pos2, vec2,
+    self, Align2, Color32, CursorIcon, FontId, Painter, Pos2, Rect, ScrollArea, Sense, Stroke,
+    UiBuilder, Vec2, pos2, vec2,
 };
-use ferrosheet_core::{CellPos, CellValue, Selection, Sheet, column_name};
+use ferrosheet_core::{CellPos, CellStyle, CellValue, Selection, Sheet, column_name};
 
 use crate::rows::{ROW_H, RowHeights};
 
@@ -31,8 +31,33 @@ pub struct GridState {
     /// Visible body size of the last frame (for page up/down).
     pub view: Vec2,
     pub row_heights: RowHeights,
+    /// The open cell editor.
+    pub edit: Option<CellEdit>,
     offset: Vec2,
     resizing: Option<Resize>,
+}
+
+/// A cell being edited in place.
+pub struct CellEdit {
+    pub pos: CellPos,
+    /// What the cell held when editing started.
+    pub original: String,
+    pub text: String,
+    /// Focus the editor (cursor at the end) on the next frame.
+    pub focus: bool,
+}
+
+/// Id of the in-cell editor, so the app can take its focus away when it closes.
+pub fn edit_id() -> egui::Id {
+    egui::Id::unique("ferrosheet_cell_edit")
+}
+
+/// What happened in the grid this frame that the app has to act on.
+#[derive(Default)]
+pub struct GridOut {
+    pub double_clicked: bool,
+    /// The editor lost focus without Enter, Tab or Esc (a click elsewhere).
+    pub edit_left: bool,
 }
 
 /// Header edge being dragged.
@@ -100,7 +125,8 @@ pub fn show(
     st: &mut GridState,
     hits: &[CellPos],
     current_hit: Option<CellPos>,
-) {
+) -> GridOut {
+    let mut grid_out = GridOut::default();
     let full = ui.available_rect_before_wrap();
     let row_hdr_w = (digits(sheet.rows.max(1000)) as f32 * 8.0 + 2.0 * PAD).max(40.0);
     let body = Rect::from_min_max(full.min + vec2(row_hdr_w, HEADER_H), full.max);
@@ -147,6 +173,15 @@ pub fn show(
 
                 painter.rect_filled(vp.translate(origin.to_vec2()), 0.0, pal.cell_bg);
 
+                // fill colours set by the user
+                for r in r0..r1.min(sheet.rows) {
+                    for c in c0..c1.min(sheet.cols) {
+                        if let Some([red, g, b]) = sheet.style(r, c).fill {
+                            painter.rect_filled(cell_rect(r, c), 0.0, Color32::from_rgb(red, g, b));
+                        }
+                    }
+                }
+
                 // search hits (sorted row-major, so the visible ones are contiguous)
                 let first = hits.partition_point(|p| p.row < r0);
                 for p in hits[first..].iter().take_while(|p| p.row < r1) {
@@ -190,10 +225,11 @@ pub fn show(
                             continue;
                         }
                         let value = sheet.value(r, c);
-                        let color = if matches!(value, CellValue::Error(_)) {
-                            visuals.error_fg_color
-                        } else {
-                            pal.text
+                        let style = sheet.style(r, c);
+                        let color = match style.color {
+                            _ if matches!(value, CellValue::Error(_)) => visuals.error_fg_color,
+                            Some([red, g, b]) => Color32::from_rgb(red, g, b),
+                            None => pal.text,
                         };
                         let rect = cell_rect(r, c);
                         // Default rows show the first line centred; taller rows show
@@ -218,9 +254,9 @@ pub fn show(
                         } else {
                             text.lines().next().unwrap_or("")
                         };
-                        painter
-                            .with_clip_rect(rect.shrink(1.0).intersect(painter.clip_rect()))
-                            .text(pos, anchor, line_text, font.clone(), color);
+                        let clipped =
+                            painter.with_clip_rect(rect.shrink(1.0).intersect(painter.clip_rect()));
+                        cell_text(&clipped, pos, anchor, line_text, &font, color, style);
                     }
                 }
 
@@ -233,6 +269,43 @@ pub fn show(
                         sel_stroke,
                         egui::StrokeKind::Inside,
                     );
+                }
+
+                // in-cell editor
+                if let Some(e) = &mut st.edit
+                    && e.pos.row < rows
+                    && e.pos.col < cols
+                {
+                    let rect = cell_rect(e.pos.row, e.pos.col);
+                    let edit = ui.put(
+                        rect,
+                        egui::TextEdit::singleline(&mut e.text)
+                            .id(edit_id())
+                            .font(font.clone())
+                            .margin(vec2(PAD - 1.0, 2.0))
+                            .desired_width(rect.width()),
+                    );
+                    let address = column_name(e.pos.col) + &(e.pos.row + 1).to_string();
+                    edit.widget_info(|| {
+                        egui::WidgetInfo::labeled(egui::Role::TextInput, true, &address)
+                    });
+                    // Focus after the editor was drawn: the key that opened it is not
+                    // typed a second time.
+                    if std::mem::take(&mut e.focus) {
+                        edit.request_focus();
+                        let mut state = egui::text_edit::TextEditState::load(ui.ctx(), edit_id())
+                            .unwrap_or_default();
+                        let end = egui::text::CCursor::new(e.text.chars().count());
+                        state
+                            .cursor
+                            .set_char_range(Some(egui::text::CCursorRange::one(end)));
+                        state.store(ui.ctx(), edit_id());
+                    } else if edit.lost_focus() {
+                        grid_out.edit_left = true;
+                    }
+                }
+                if resp.double_clicked() {
+                    grid_out.double_clicked = true;
                 }
 
                 // mouse selection
@@ -450,6 +523,39 @@ pub fn show(
     }
 
     ui.allocate_rect(full, Sense::hover());
+    grid_out
+}
+
+/// Cell text in the user's style. egui's default font has no bold face, so bold is the
+/// text drawn twice, a fraction of a pixel apart.
+fn cell_text(
+    painter: &Painter,
+    pos: Pos2,
+    anchor: Align2,
+    text: &str,
+    font: &FontId,
+    color: Color32,
+    style: CellStyle,
+) {
+    if !style.bold && !style.italic {
+        painter.text(pos, anchor, text, font.clone(), color);
+        return;
+    }
+    let job = egui::text::LayoutJob::single_section(
+        text.to_owned(),
+        egui::TextFormat {
+            font_id: font.clone(),
+            color,
+            italics: style.italic,
+            ..Default::default()
+        },
+    );
+    let galley = painter.layout_job(job);
+    let at = anchor.anchor_size(pos, galley.size()).min;
+    if style.bold {
+        painter.galley(at + vec2(0.6, 0.0), galley.clone(), color);
+    }
+    painter.galley(at, galley, color);
 }
 
 /// Click or drag on a header strip selects whole columns or rows.

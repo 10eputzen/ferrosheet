@@ -1,14 +1,19 @@
 //! Application state and the frame-by-frame UI.
 
-use std::collections::HashMap;
+mod editing;
+
+use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, TryRecvError};
 
 use eframe::egui::{self, Event, Key, Modifiers, ViewportCommand};
 use ferrosheet_core::{
-    CellPos, CopyFormat, EXTENSIONS, Query, Selection, Sheet, cell_address, copy_text, find_all,
+    CellPos, CopyFormat, EXTENSIONS, Query, Selection, Sheet, TextFormat, cell_address, copy_text,
+    find_all,
 };
+
+use editing::{After, Engine, Op};
 
 use crate::grid::{self, GridState};
 use crate::loader::{LoadMsg, Loader};
@@ -22,7 +27,20 @@ const STATUS_SECS: f64 = 2.0;
 struct SheetView {
     sheet: Arc<Sheet>,
     formulas: HashMap<(u32, u32), String>,
+    /// The loader has sent the formulas (the editing model is built from both).
+    formulas_loaded: bool,
     grid: GridState,
+}
+
+impl SheetView {
+    fn new(sheet: Arc<Sheet>) -> SheetView {
+        SheetView {
+            sheet,
+            formulas: HashMap::new(),
+            formulas_loaded: false,
+            grid: GridState::default(),
+        }
+    }
 }
 
 struct Doc {
@@ -31,6 +49,13 @@ struct Doc {
     names: Vec<String>,
     sheets: Vec<Option<SheetView>>,
     active: usize,
+    /// How a text file was written; `None` for workbooks.
+    text_format: Option<TextFormat>,
+    engine: Engine,
+    /// Changes waiting for the model.
+    pending: VecDeque<Op>,
+    /// Changed since opened or saved.
+    dirty: bool,
 }
 
 #[derive(Default)]
@@ -70,6 +95,12 @@ pub struct App {
     update: Update,
     /// Sheet to show once the file is open (after an update restart).
     restore_sheet: Option<usize>,
+    /// Asking whether to save before this happens.
+    confirm: Option<After>,
+    /// Unsaved changes were saved or discarded; the window may close.
+    allow_close: bool,
+    /// Window title last sent.
+    title: String,
 }
 
 impl App {
@@ -118,19 +149,28 @@ impl App {
         }
     }
 
+    /// Opens `path`, asking first when the open file has unsaved changes.
+    fn request_open(&mut self, ctx: &egui::Context, path: PathBuf) {
+        if self.dirty() {
+            self.confirm = Some(After::Open(path));
+        } else {
+            self.open(ctx, path);
+        }
+    }
+
     fn open(&mut self, ctx: &egui::Context, path: PathBuf) {
-        let name = path
-            .file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_default();
-        ctx.send_viewport_cmd(ViewportCommand::Title(format!("{name} – {}", text::APP)));
         self.doc = Some(Doc {
             path: path.clone(),
             loader: Loader::open(path, ctx.clone()),
             names: Vec::new(),
             sheets: Vec::new(),
             active: 0,
+            text_format: None,
+            engine: Engine::Idle,
+            pending: VecDeque::new(),
+            dirty: false,
         });
+        self.update_title(ctx);
         self.search.hits.clear();
         self.search.current = None;
         self.search.dirty = true;
@@ -141,7 +181,27 @@ impl App {
             .add_filter(text::file_filter(), EXTENSIONS)
             .pick_file()
         {
-            self.open(ctx, p);
+            self.request_open(ctx, p);
+        }
+    }
+
+    /// "• name – ferrosheet", the dot for unsaved changes.
+    fn update_title(&mut self, ctx: &egui::Context) {
+        let title = match &self.doc {
+            None => text::APP.to_owned(),
+            Some(d) => {
+                let name = d
+                    .path
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_default();
+                let dot = if d.dirty { "• " } else { "" };
+                format!("{dot}{name} – {}", text::APP)
+            }
+        };
+        if title != self.title {
+            ctx.send_viewport_cmd(ViewportCommand::Title(title.clone()));
+            self.title = title;
         }
     }
 
@@ -149,9 +209,10 @@ impl App {
         let Some(doc) = &mut self.doc else { return };
         for msg in doc.loader.poll() {
             match msg {
-                LoadMsg::Opened { names } => {
+                LoadMsg::Opened { names, text_format } => {
                     doc.sheets = names.iter().map(|_| None).collect();
                     doc.names = names;
+                    doc.text_format = text_format;
                     if let Some(i) = self.restore_sheet.take()
                         && i < doc.names.len()
                     {
@@ -164,38 +225,34 @@ impl App {
                     // in full. Keep the view (selection, scroll, widths) when it grows.
                     match &mut doc.sheets[idx] {
                         Some(v) => v.sheet = sheet,
-                        slot => {
-                            *slot = Some(SheetView {
-                                sheet,
-                                formulas: HashMap::new(),
-                                grid: GridState::default(),
-                            })
-                        }
+                        slot => *slot = Some(SheetView::new(sheet)),
                     }
+                    // edits made while the full sheet was still loading
+                    editing::refresh_sheet(doc, idx);
                     self.search.dirty = true;
                 }
                 LoadMsg::Formulas { idx, map } => {
                     if let Some(v) = &mut doc.sheets[idx] {
                         v.formulas = map;
+                        v.formulas_loaded = true;
                     }
+                    editing::refresh_sheet(doc, idx);
                 }
                 // A sheet that failed shows as empty; the dialog says why.
                 LoadMsg::Error {
                     sheet: Some(idx),
                     msg,
                 } => {
-                    doc.sheets[idx] = Some(SheetView {
-                        sheet: Arc::new(Sheet::empty(doc.names[idx].clone())),
-                        formulas: HashMap::new(),
-                        grid: GridState::default(),
-                    });
+                    let mut v = SheetView::new(Arc::new(Sheet::empty(doc.names[idx].clone())));
+                    v.formulas_loaded = true;
+                    doc.sheets[idx] = Some(v);
                     self.error = Some(msg);
                 }
                 // The file could not be opened at all: back to the start screen.
                 LoadMsg::Error { sheet: None, msg } => {
                     self.doc = None;
                     self.error = Some(msg);
-                    ctx.send_viewport_cmd(ViewportCommand::Title(text::APP.into()));
+                    self.update_title(ctx);
                     return;
                 }
             }
@@ -395,10 +452,12 @@ impl App {
     fn keyboard(&mut self, ctx: &egui::Context) {
         let mut copy = None;
         let mut actions = Vec::new();
+        let mut typed = String::new();
         ctx.input(|i| {
             for e in &i.events {
                 match e {
                     Event::Copy => copy = Some(CopyFormat::Display),
+                    Event::Text(t) => typed.push_str(t),
                     Event::Key {
                         key,
                         pressed: true,
@@ -410,10 +469,25 @@ impl App {
             }
         });
         let editing = ctx.memory(|m| m.focused().is_some());
+        let modal = self.confirm.is_some() || self.error.is_some();
+        // Typing on a cell starts editing it with what was typed.
+        if !editing && !modal && !typed.is_empty() && !self.editing_cell() {
+            self.start_edit(Some(typed));
+            return;
+        }
 
         for (key, m) in actions {
             let ctrl = m.command;
+            let cell = self.editing_cell();
             match key {
+                _ if modal => {}
+                Key::Enter if cell => {
+                    self.commit_edit(ctx, Some((if m.shift { -1 } else { 1 }, 0)));
+                }
+                Key::Tab if cell => self.commit_edit(ctx, Some((0, if m.shift { -1 } else { 1 }))),
+                Key::Escape if cell => self.cancel_edit(ctx),
+                Key::S if ctrl && m.shift => self.save_as(ctx, None),
+                Key::S if ctrl => self.save(ctx, None),
                 Key::O if ctrl => self.open_dialog(ctx),
                 Key::F if ctrl => {
                     self.search.open = true;
@@ -434,8 +508,15 @@ impl App {
                     }
                 }
                 Key::C if ctrl && m.shift && !editing => copy = Some(CopyFormat::Invariant),
-                _ if !editing => self.navigate(key, m),
-                _ => {}
+                _ if editing || cell => {}
+                Key::Z if ctrl => self.undo(ctx, m.shift),
+                Key::Y if ctrl => self.undo(ctx, true),
+                Key::B if ctrl => self.toggle(ctx, false),
+                Key::I if ctrl => self.toggle(ctx, true),
+                Key::F2 => self.start_edit(None),
+                Key::Enter if !m.shift && self.active_view().is_some() => self.start_edit(None),
+                Key::Delete => self.clear_selection(ctx),
+                _ => self.navigate(key, m),
             }
         }
         if let Some(f) = copy.filter(|_| !editing) {
@@ -491,17 +572,21 @@ impl App {
                 }
                 if let Some(v) = self.active_view() {
                     let cur = v.grid.selection.cursor;
-                    let content = v
-                        .formulas
-                        .get(&(cur.row, cur.col))
-                        .cloned()
-                        .unwrap_or_else(|| v.sheet.display(cur.row, cur.col).into_owned());
+                    let content = match &v.grid.edit {
+                        Some(e) => e.text.clone(),
+                        None => v
+                            .formulas
+                            .get(&(cur.row, cur.col))
+                            .cloned()
+                            .unwrap_or_else(|| v.sheet.display(cur.row, cur.col).into_owned()),
+                    };
                     ui.separator();
                     ui.monospace(cell_address(cur.row, cur.col));
                     let mut s = content.as_str();
                     ui.add(egui::TextEdit::singleline(&mut s).desired_width(f32::INFINITY));
                 }
             });
+            self.format_bar(ui);
             if self.search.open {
                 self.search_bar(ui);
             }
@@ -624,11 +709,16 @@ impl eframe::App for App {
         #[cfg(feature = "screenshot")]
         screenshot(&ctx);
         self.receive(&ctx);
+        self.poll_engine(&ctx);
         self.poll_update();
 
+        if ctx.input(|i| i.viewport().close_requested()) && self.dirty() && !self.allow_close {
+            ctx.send_viewport_cmd(ViewportCommand::CancelClose);
+            self.confirm = Some(After::Close);
+        }
         let dropped = ctx.input(|i| i.raw.dropped_files.first().map(|f| f.path().to_path_buf()));
         if let Some(p) = dropped {
-            self.open(&ctx, p);
+            self.request_open(&ctx, p);
         }
         self.keyboard(&ctx);
         if self.search.dirty && self.search.open && !self.large_sheet() {
@@ -637,6 +727,7 @@ impl eframe::App for App {
 
         self.top_bar(ui);
         self.bottom_bar(ui);
+        let mut grid_out = None;
         egui::CentralPanel::no_frame().show(ui, |ui| match &mut self.doc {
             None => {
                 ui.centered_and_justified(|ui| ui.weak(text::open_hint()));
@@ -663,7 +754,7 @@ impl eframe::App for App {
                         .map(|i| self.search.hits[i])
                         .filter(|h| h.0 == active)
                         .map(|h| h.1);
-                    grid::show(ui, &v.sheet, &mut v.grid, &hits, current);
+                    grid_out = Some(grid::show(ui, &v.sheet, &mut v.grid, &hits, current));
                 }
                 None => {
                     ui.centered_and_justified(|ui| {
@@ -675,6 +766,15 @@ impl eframe::App for App {
                 }
             },
         });
+        if let Some(out) = grid_out {
+            if out.edit_left {
+                self.commit_edit(&ctx, None);
+            } else if out.double_clicked && !self.editing_cell() {
+                self.start_edit(None);
+            }
+        }
+        self.update_title(&ctx);
+        self.confirm_modal(&ctx);
         self.error_modal(&ctx);
     }
 }
@@ -712,7 +812,7 @@ mod tests {
     use eframe::egui::{Event, Key, Modifiers, OutputCommand};
     use egui_kittest::Harness;
     use egui_kittest::kittest::Queryable;
-    use ferrosheet_core::{CellPos, Selection};
+    use ferrosheet_core::{CellPos, CellValue, Locale, Selection, Workbook};
 
     use super::App;
     use crate::text;
@@ -726,7 +826,7 @@ mod tests {
             .with_size([900.0, 600.0])
             .build_eframe(move |cc| App::new(&cc.egui_ctx, Some(path)));
         settle(&mut h, |app| {
-            app.active_view().is_some_and(|v| !v.formulas.is_empty())
+            app.active_view().is_some_and(|v| v.formulas_loaded)
         });
         h
     }
@@ -919,5 +1019,169 @@ mod tests {
             .build_eframe(|cc| App::new(&cc.egui_ctx, Some(PathBuf::from("gibt-es-nicht.xlsx"))));
         settle(&mut h, |app| app.error.is_some());
         h.get_by_label(text::load_failed());
+    }
+
+    /// A copy of a fixture in a fresh temp folder, so saving never touches the original.
+    fn scratch_copy(name: &str, bytes: &[u8]) -> PathBuf {
+        let dir = std::env::temp_dir().join("ferrosheet-tests").join(name);
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(name);
+        std::fs::write(&path, bytes).unwrap();
+        path
+    }
+
+    fn value(h: &mut Harness<'_, App>, r: u32, c: u32) -> CellValue {
+        h.state_mut()
+            .active_view()
+            .unwrap()
+            .sheet
+            .value(r, c)
+            .clone()
+    }
+
+    fn select(h: &mut Harness<'_, App>, r: u32, c: u32) {
+        h.state_mut().active_view().unwrap().grid.selection = Selection::single(CellPos::new(r, c));
+        h.run();
+    }
+
+    #[test]
+    fn typing_on_a_cell_edits_it_and_formulas_follow() {
+        let mut h = open(demo());
+        let CellValue::Number(d2) = value(&mut h, 1, 3) else {
+            panic!("D2 is a number")
+        };
+        select(&mut h, 1, 1); // B2, quantity 120
+        h.event(Event::Text("10".into()));
+        h.run();
+        let edit = h
+            .state_mut()
+            .active_view()
+            .unwrap()
+            .grid
+            .edit
+            .as_ref()
+            .map(|e| e.text.clone());
+        assert_eq!(edit.as_deref(), Some("10"));
+        h.key_press(Key::Enter);
+        settle(&mut h, |app| {
+            app.active_view().unwrap().sheet.value(1, 1) == &CellValue::Number(10.0)
+        });
+        assert_eq!(cursor(&mut h), CellPos::new(2, 1));
+        let CellValue::Number(new) = value(&mut h, 1, 3) else {
+            panic!("D2 is still a number")
+        };
+        assert!((new - d2 * 10.0 / 120.0).abs() < 1e-9, "D2 {d2} -> {new}");
+        assert!(h.state().dirty());
+
+        // Ctrl+Z brings the old value back, Ctrl+Y the new one
+        h.key_press_modifiers(Modifiers::COMMAND, Key::Z);
+        settle(&mut h, |app| {
+            app.active_view().unwrap().sheet.value(1, 1) == &CellValue::Number(120.0)
+        });
+        h.key_press_modifiers(Modifiers::COMMAND, Key::Y);
+        settle(&mut h, |app| {
+            app.active_view().unwrap().sheet.value(1, 1) == &CellValue::Number(10.0)
+        });
+    }
+
+    #[test]
+    fn escape_cancels_and_delete_clears_the_selection() {
+        let mut h = open(demo());
+        select(&mut h, 1, 1);
+        h.key_press(Key::F2);
+        h.run();
+        let edit = h
+            .state_mut()
+            .active_view()
+            .unwrap()
+            .grid
+            .edit
+            .as_ref()
+            .map(|e| e.text.clone());
+        assert_eq!(edit.as_deref(), Some("120"));
+        h.key_press(Key::Escape);
+        h.run();
+        assert!(h.state_mut().active_view().unwrap().grid.edit.is_none());
+        assert!(!h.state().dirty());
+
+        h.state_mut().active_view().unwrap().grid.selection = Selection {
+            anchor: CellPos::new(1, 1),
+            cursor: CellPos::new(2, 2),
+        };
+        h.key_press(Key::Delete);
+        settle(&mut h, |app| {
+            app.active_view().unwrap().sheet.value(2, 2) == &CellValue::Empty
+        });
+        assert_eq!(value(&mut h, 1, 1), CellValue::Empty);
+    }
+
+    #[test]
+    fn ctrl_s_saves_an_xlsx_in_place_with_values_and_formulas() {
+        let path = scratch_copy("save.xlsx", &std::fs::read(demo()).unwrap());
+        let mut h = open(path.clone());
+        select(&mut h, 1, 1);
+        h.event(Event::Text("7".into()));
+        h.run();
+        h.key_press(Key::Enter);
+        h.key_press_modifiers(Modifiers::COMMAND, Key::S);
+        settle(&mut h, |app| !app.dirty());
+
+        let mut wb = Workbook::open(&path, Locale::Invariant).unwrap();
+        let sheet = wb.load_sheet(0).unwrap();
+        assert_eq!(sheet.value(1, 1), &CellValue::Number(7.0));
+        let formulas = wb.load_formulas(0).unwrap();
+        assert_eq!(formulas[&(1, 3)], "=B2*C2*(1-G2)");
+    }
+
+    #[test]
+    fn a_csv_is_saved_with_its_own_delimiter_and_decimal_comma() {
+        let path = scratch_copy("save.csv", "Name;Wert\r\nA;1,5\r\nB;2\r\n".as_bytes());
+        let mut h = open(path.clone());
+        select(&mut h, 2, 1);
+        h.event(Event::Text("3.25".into()));
+        h.run();
+        h.key_press(Key::Enter);
+        h.key_press_modifiers(Modifiers::COMMAND, Key::S);
+        settle(&mut h, |app| !app.dirty());
+        let saved = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(saved, "Name;Wert\r\nA;1,5\r\nB;3,25\r\n");
+    }
+
+    #[test]
+    fn opening_another_file_with_unsaved_changes_asks_first() {
+        let mut h = open(demo());
+        select(&mut h, 1, 1);
+        h.event(Event::Text("1".into()));
+        h.run();
+        h.key_press(Key::Enter);
+        settle(&mut h, |app| {
+            app.active_view().unwrap().sheet.value(1, 1) == &CellValue::Number(1.0)
+        });
+        // opening another file asks first
+        let ctx = h.ctx.clone();
+        h.state_mut().request_open(&ctx, demo());
+        h.run();
+        h.get_by_label(&text::save_question("demo.xlsx"));
+        h.get_by_label(text::cancel()).click();
+        h.run();
+        assert!(h.state().confirm.is_none());
+        assert!(h.state().dirty());
+    }
+
+    #[test]
+    fn ctrl_b_makes_the_cell_bold_and_undo_takes_it_back() {
+        let mut h = open(demo());
+        select(&mut h, 1, 1);
+        h.key_press_modifiers(Modifiers::COMMAND, Key::B);
+        settle(&mut h, |app| {
+            let v = app.active_view().unwrap();
+            v.sheet.style(1, 1).bold
+        });
+        h.key_press_modifiers(Modifiers::COMMAND, Key::Z);
+        settle(&mut h, |app| {
+            let v = app.active_view().unwrap();
+            !v.sheet.style(1, 1).bold
+        });
     }
 }

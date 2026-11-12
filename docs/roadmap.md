@@ -54,5 +54,9 @@ Package managers (winget, Flathub/AppImage, Homebrew) come on top once the proje
 
 ## Phase 2 – write
 
-Edit cells (with IronCalc recalculation, see above), save as `.xlsx` only, formatting is not
-preserved. See [feature parity](feature-parity.md).
+Done in 0.2: edit cells and formulas (IronCalc recalculation, built on the first edit),
+undo/redo, bold, italic, text and fill colour, number formats. Save xlsx and csv in place,
+other formats as a new `.xlsx`. Values and formulas are kept; other formatting from the file
+may be lost.
+Still open: paste, insert/delete rows and columns, replace, printing/PDF. See
+[feature parity](feature-parity.md).

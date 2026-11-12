@@ -7,16 +7,19 @@ use std::sync::mpsc::{Receiver, Sender, channel};
 use eframe::egui;
 use std::sync::Arc;
 
-use ferrosheet_core::{Sheet, Workbook};
+use ferrosheet_core::{Sheet, TextFormat, Workbook};
 
 pub enum LoadMsg {
     Opened {
         names: Vec<String>,
+        /// How a text file (csv, tsv) was written, so saving can write it the same way.
+        text_format: Option<TextFormat>,
     },
     Sheet {
         idx: usize,
         sheet: Arc<Sheet>,
     },
+    /// Always follows a loaded sheet (empty when the file has no readable formulas).
     Formulas {
         idx: usize,
         map: HashMap<(u32, u32), String>,
@@ -55,6 +58,7 @@ impl Loader {
             };
             send(LoadMsg::Opened {
                 names: wb.sheet_names.clone(),
+                text_format: wb.text_format(),
             });
             let mut loaded = vec![false; wb.sheet_names.len()];
             for idx in std::iter::once(0).chain(req_rx.iter()) {
@@ -88,9 +92,8 @@ impl Loader {
                 }
                 // Formulas are extra information for the formula bar; a file without
                 // readable formulas simply shows values only.
-                if let Ok(map) = wb.load_formulas(idx) {
-                    send(LoadMsg::Formulas { idx, map });
-                }
+                let map = wb.load_formulas(idx).unwrap_or_default();
+                send(LoadMsg::Formulas { idx, map });
             }
         });
         Loader { requests, messages }

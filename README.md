@@ -25,12 +25,17 @@ question was: why not port that small piece to Rust?
 - Search across the current sheet or all sheets, as plain text or regular expression
 - Select cells, rows, columns or everything; copy as tab-separated text that pastes into
   Excel, Google Sheets or an email
+- Edit cells and formulas with recalculation ([IronCalc](https://github.com/ironcalc/IronCalc)),
+  undo and redo, bold, italic, text and fill colour, number formats
+- Save xlsx and csv in place (csv keeps its delimiter, encoding and decimal separator);
+  xls, xlsb and ods are saved as a new `.xlsx`. Values and formulas are kept; fonts,
+  borders and other formatting from the file may be lost
 - Resize columns and rows by dragging, double-click an edge to fit the content
 - Light and dark mode, following the system
 - Damaged files end in an error message, never in a crash
 
-It is a viewer. Editing and saving as `.xlsx` are planned for phase 2, see the
-[roadmap](docs/roadmap.md) and the honest [comparison with LibreOffice Calc](docs/feature-parity.md).
+It is a viewer first, with simple editing. See the [roadmap](docs/roadmap.md) and the honest
+[comparison with LibreOffice Calc](docs/feature-parity.md).
 The interface follows the system language: German on a German system, English everywhere
 else (dates as `2026-11-02`, decimal point). Set `FERROSHEET_LANG=de` or `en` to override.
 
@@ -43,7 +48,7 @@ Measured on a desktop PC with Windows 11, release build:
 | Window visible | < 300 ms |
 | Open a 100 000 × 30 `.xlsx` (11.7 MB): first rows / whole sheet | 11 ms / 0.73 s |
 | Search 3 million cells | 45 ms (index built in the background after loading) |
-| Download size | single 8 MB `.exe`, no installer |
+| Download size | single `.exe` of about 12 MB, no installer |
 
 Reproduce with `cargo run --release -p ferrosheet-core --example gen_big` and
 `cargo run --release -p ferrosheet-core --example bench_load -- target/big.xlsx`.
@@ -77,7 +82,12 @@ cargo install --path crates/ferrosheet
 | Keys | Action |
 | --- | --- |
 | Ctrl+O | Open a file (or drop it on the window) |
-| Arrows, Enter, Tab | Move; Shift extends the selection (Shift+Enter/Tab moves back) |
+| Arrows, Tab | Move; Shift extends the selection (Shift+Tab moves back) |
+| Typing, F2, Enter, double-click | Edit the cell; Enter saves and moves down, Tab right, Esc cancels |
+| Delete | Empty the selected cells |
+| Ctrl+Z, Ctrl+Y | Undo, redo |
+| Ctrl+B, Ctrl+I | Bold, italic |
+| Ctrl+S, Ctrl+Shift+S | Save, save as `.xlsx` |
 | Ctrl+Arrows, Home/End, Ctrl+Home/End | Jump to the edge of the sheet or row |
 | Page Up / Page Down | Scroll a screen |
 | Ctrl+A | Select everything |

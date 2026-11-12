@@ -65,6 +65,9 @@ pub struct CellUpdate {
     pub style: CellStyle,
 }
 
+/// Formulas of a sheet by (row, col), each starting with `=`.
+type Formulas = HashMap<(u32, u32), String>;
+
 pub struct EditSession {
     model: UserModel<'static>,
     locale: Locale,
@@ -97,7 +100,7 @@ impl EditSession {
     /// Builds the model from sheets loaded by the viewer (xls, xlsb, ods, csv): values
     /// and formulas, dates keep a date format, no other styles.
     pub fn from_sheets(
-        sheets: &[(&Sheet, &HashMap<(u32, u32), String>)],
+        sheets: &[(&Sheet, &Formulas)],
         locale: Locale,
     ) -> Result<EditSession, String> {
         let mut model = Model::new_empty("Book", locale_id(locale), TIMEZONE, LANGUAGE)?;
