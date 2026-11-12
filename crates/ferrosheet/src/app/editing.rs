@@ -54,7 +54,8 @@ pub(super) enum Engine {
     WaitingForSheets,
     Building(Receiver<Result<EditSession, String>>),
     Ready(Box<EditSession>),
-    Failed,
+    /// The file cannot be edited; why.
+    Failed(String),
 }
 
 /// Text and fill colours offered in the format bar.
@@ -119,7 +120,7 @@ impl App {
     /// Queues a change; the first one starts building the model.
     pub(super) fn queue(&mut self, ctx: &egui::Context, op: Op) {
         let Some(doc) = &mut self.doc else { return };
-        if matches!(doc.engine, Engine::Failed) {
+        if matches!(doc.engine, Engine::Failed(_)) {
             return;
         }
         if !matches!(op, Op::Save { .. }) {
@@ -189,12 +190,16 @@ impl App {
     }
 
     fn edit_failed(&mut self, e: String) {
+        let why = text::cannot_edit(&e);
         if let Some(doc) = &mut self.doc {
-            doc.engine = Engine::Failed;
+            doc.engine = Engine::Failed(why.clone());
             doc.pending.clear();
             doc.dirty = false;
+            for v in doc.sheets.iter_mut().flatten() {
+                v.grid.edit = None;
+            }
         }
-        self.error = Some(e);
+        self.error = Some(why);
         self.error_title = Some(text::edit_failed());
     }
 
@@ -360,6 +365,12 @@ impl App {
     /// Opens the editor on the cursor cell, with `typed` replacing the content.
     pub(super) fn start_edit(&mut self, typed: Option<String>) {
         let Some(doc) = &mut self.doc else { return };
+        // Say why instead of silently ignoring the key or click.
+        if let Engine::Failed(why) = &doc.engine {
+            self.error = Some(why.clone());
+            self.error_title = Some(text::edit_failed());
+            return;
+        }
         let idx = doc.active;
         let session = match &doc.engine {
             Engine::Ready(s) => Some(s),
@@ -382,6 +393,7 @@ impl App {
             text: typed.unwrap_or_else(|| original.clone()),
             original,
             focus: true,
+            in_bar: false,
         });
     }
 
@@ -393,7 +405,10 @@ impl App {
             return;
         };
         let Some(e) = v.grid.edit.take() else { return };
-        ctx.memory_mut(|m| m.surrender_focus(grid::edit_id()));
+        ctx.memory_mut(|m| {
+            m.surrender_focus(grid::edit_id());
+            m.surrender_focus(grid::bar_id());
+        });
         if let Some((dr, dc)) = step {
             let g = &mut v.grid;
             g.selection = Selection::single(e.pos);
@@ -418,7 +433,10 @@ impl App {
         if let Some(v) = self.active_view() {
             v.grid.edit = None;
         }
-        ctx.memory_mut(|m| m.surrender_focus(grid::edit_id()));
+        ctx.memory_mut(|m| {
+            m.surrender_focus(grid::edit_id());
+            m.surrender_focus(grid::bar_id());
+        });
     }
 
     pub(super) fn editing_cell(&mut self) -> bool {

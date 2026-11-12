@@ -45,11 +45,18 @@ pub struct CellEdit {
     pub text: String,
     /// Focus the editor (cursor at the end) on the next frame.
     pub focus: bool,
+    /// Typing happens in the formula bar; the cell only mirrors the text.
+    pub in_bar: bool,
 }
 
 /// Id of the in-cell editor, so the app can take its focus away when it closes.
 pub fn edit_id() -> egui::Id {
     egui::Id::unique("ferrosheet_cell_edit")
+}
+
+/// Id of the formula bar.
+pub fn bar_id() -> egui::Id {
+    egui::Id::unique("ferrosheet_formula_bar")
 }
 
 /// What happened in the grid this frame that the app has to act on.
@@ -273,6 +280,29 @@ pub fn show(
 
                 // in-cell editor
                 if let Some(e) = &mut st.edit
+                    && e.pos.row < rows
+                    && e.pos.col < cols
+                {
+                    let rect = cell_rect(e.pos.row, e.pos.col);
+                    if e.in_bar {
+                        // Mirror what is typed in the formula bar.
+                        painter.rect_filled(rect, 0.0, pal.cell_bg);
+                        let clipped =
+                            painter.with_clip_rect(rect.shrink(1.0).intersect(painter.clip_rect()));
+                        clipped.text(
+                            rect.left_center() + vec2(PAD, 0.0),
+                            Align2::LEFT_CENTER,
+                            &e.text,
+                            font.clone(),
+                            pal.text,
+                        );
+                    }
+                    // A strong frame marks the cell being edited.
+                    let frame = Stroke::new(2.5, visuals.selection.stroke.color);
+                    painter.rect_stroke(rect.expand(1.0), 0.0, frame, egui::StrokeKind::Outside);
+                }
+                if let Some(e) = &mut st.edit
+                    && !e.in_bar
                     && e.pos.row < rows
                     && e.pos.col < cols
                 {

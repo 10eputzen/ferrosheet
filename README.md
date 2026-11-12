@@ -83,7 +83,7 @@ cargo install --path crates/ferrosheet
 | --- | --- |
 | Ctrl+O | Open a file (or drop it on the window) |
 | Arrows, Tab | Move; Shift extends the selection (Shift+Tab moves back) |
-| Typing, F2, Enter, double-click | Edit the cell; Enter saves and moves down, Tab right, Esc cancels |
+| Typing, F2, Enter, double-click, click into the formula bar | Edit the cell; Enter saves and moves down, Tab right, Esc cancels |
 | Delete | Empty the selected cells |
 | Ctrl+Z, Ctrl+Y | Undo, redo |
 | Ctrl+B, Ctrl+I | Bold, italic |

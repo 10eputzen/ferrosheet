@@ -564,6 +564,8 @@ impl App {
     // ---- panels ------------------------------------------------------------
 
     fn top_bar(&mut self, ui: &mut egui::Ui) {
+        let mut start_in_bar = false;
+        let mut leave_bar = false;
         egui::Panel::top("top").show(ui, |ui| {
             ui.add_space(2.0);
             ui.horizontal(|ui| {
@@ -572,18 +574,39 @@ impl App {
                 }
                 if let Some(v) = self.active_view() {
                     let cur = v.grid.selection.cursor;
-                    let content = match &v.grid.edit {
-                        Some(e) => e.text.clone(),
-                        None => v
-                            .formulas
-                            .get(&(cur.row, cur.col))
-                            .cloned()
-                            .unwrap_or_else(|| v.sheet.display(cur.row, cur.col).into_owned()),
-                    };
                     ui.separator();
-                    ui.monospace(cell_address(cur.row, cur.col));
-                    let mut s = content.as_str();
-                    ui.add(egui::TextEdit::singleline(&mut s).desired_width(f32::INFINITY));
+                    let address = ui.monospace(cell_address(cur.row, cur.col));
+                    let bar = |text| {
+                        egui::TextEdit::singleline(text)
+                            .id(grid::bar_id())
+                            .desired_width(f32::INFINITY)
+                    };
+                    match &mut v.grid.edit {
+                        // Editing: the bar edits the same text as the cell.
+                        Some(e) => {
+                            let resp = ui.add(bar(&mut e.text)).labelled_by(address.id);
+                            if resp.has_focus() {
+                                e.in_bar = true;
+                            } else if e.in_bar && resp.lost_focus() {
+                                leave_bar = true;
+                            }
+                        }
+                        // Not editing: clicking into the bar starts editing there.
+                        None => {
+                            let mut content = v
+                                .formulas
+                                .get(&(cur.row, cur.col))
+                                .cloned()
+                                .unwrap_or_else(|| v.sheet.display(cur.row, cur.col).into_owned());
+                            let resp = ui
+                                .add(bar(&mut content))
+                                .labelled_by(address.id)
+                                .on_hover_text(text::formula_bar_hint());
+                            if resp.gained_focus() {
+                                start_in_bar = true;
+                            }
+                        }
+                    }
                 }
             });
             self.format_bar(ui);
@@ -592,6 +615,20 @@ impl App {
             }
             ui.add_space(2.0);
         });
+        let ctx = ui.ctx().clone();
+        if start_in_bar {
+            self.start_edit(None);
+            match self.active_view().and_then(|v| v.grid.edit.as_mut()) {
+                Some(e) => {
+                    e.in_bar = true;
+                    e.focus = false;
+                }
+                None => ctx.memory_mut(|m| m.surrender_focus(grid::bar_id())),
+            }
+        }
+        if leave_bar {
+            self.commit_edit(&ctx, None);
+        }
     }
 
     fn bottom_bar(&mut self, ui: &mut egui::Ui) {
@@ -633,7 +670,9 @@ impl App {
                         _ => {
                             if let Some(v) = self.active_view() {
                                 let n = v.grid.selection.cell_count();
-                                if n > 1 {
+                                if v.grid.edit.is_some() {
+                                    ui.label(text::editing_hint());
+                                } else if n > 1 {
                                     ui.weak(text::selected(n));
                                 }
                             }
@@ -814,8 +853,9 @@ mod tests {
     use egui_kittest::kittest::Queryable;
     use ferrosheet_core::{CellPos, CellValue, Locale, Selection, Workbook};
 
-    use super::App;
-    use crate::text;
+    use super::{App, Engine};
+    use crate::{grid, text};
+    use eframe::egui::accesskit::Role;
 
     fn demo() -> PathBuf {
         Path::new(env!("CARGO_MANIFEST_DIR")).join("../ferrosheet-core/tests/fixtures/demo.xlsx")
@@ -1063,6 +1103,8 @@ mod tests {
             .as_ref()
             .map(|e| e.text.clone());
         assert_eq!(edit.as_deref(), Some("10"));
+        // the editor has the keyboard, so the text cursor shows
+        assert!(h.ctx.memory(|m| m.has_focus(grid::edit_id())));
         h.key_press(Key::Enter);
         settle(&mut h, |app| {
             app.active_view().unwrap().sheet.value(1, 1) == &CellValue::Number(10.0)
@@ -1183,5 +1225,43 @@ mod tests {
             let v = app.active_view().unwrap();
             !v.sheet.style(1, 1).bold
         });
+    }
+
+    #[test]
+    fn clicking_into_the_formula_bar_edits_the_cell() {
+        let mut h = open(demo());
+        select(&mut h, 1, 1);
+        h.get_by_role_and_label(Role::TextInput, "B2").click();
+        h.run();
+        assert!(h.ctx.memory(|m| m.has_focus(grid::bar_id())));
+        let edit = h
+            .state_mut()
+            .active_view()
+            .unwrap()
+            .grid
+            .edit
+            .as_ref()
+            .map(|e| e.in_bar);
+        assert_eq!(edit, Some(true));
+        h.key_press_modifiers(Modifiers::COMMAND, Key::A);
+        h.event(Event::Text("55".into()));
+        h.run();
+        h.key_press(Key::Enter);
+        settle(&mut h, |app| {
+            app.active_view().unwrap().sheet.value(1, 1) == &CellValue::Number(55.0)
+        });
+        assert!(h.state_mut().active_view().unwrap().grid.edit.is_none());
+        assert_eq!(cursor(&mut h), CellPos::new(2, 1));
+    }
+
+    #[test]
+    fn a_file_that_cannot_be_edited_says_why() {
+        let mut h = open(demo());
+        h.state_mut().doc.as_mut().unwrap().engine = Engine::Failed("broken".into());
+        h.key_press(Key::F2);
+        h.run();
+        assert!(h.state_mut().active_view().unwrap().grid.edit.is_none());
+        h.get_by_label(text::edit_failed());
+        assert!(h.state().error.as_deref().unwrap().contains("broken"));
     }
 }

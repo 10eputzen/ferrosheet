@@ -82,6 +82,10 @@ texts! {
     save_failed: "Speichern fehlgeschlagen", "Saving failed";
     xlsx_filter: "Excel-Arbeitsmappe", "Excel workbook";
     preparing_edit: "Bearbeiten wird vorbereitet …", "Preparing to edit …";
+    formula_bar_hint: "Klicken zum Bearbeiten. Oder in der Zelle einfach lostippen, F2 oder Doppelklick.",
+        "Click to edit. Or just start typing on a cell, press F2 or double-click it.";
+    editing_hint: "Bearbeiten – Enter übernimmt, Tab geht nach rechts, Esc bricht ab",
+        "Editing – Enter saves, Tab moves right, Esc cancels";
     edit_failed: "Bearbeiten nicht möglich", "Editing not possible";
     unsaved_title: "Ungespeicherte Änderungen", "Unsaved changes";
     discard: "Verwerfen", "Discard";
@@ -107,6 +111,16 @@ texts! {
         "ferrosheet is no longer associated with spreadsheets.";
     #[cfg(windows)]
     register_failed: "Verknüpfung fehlgeschlagen", "Association failed";
+}
+
+pub fn cannot_edit(reason: &str) -> String {
+    let reason = if reason.is_empty() { "?" } else { reason };
+    match lang() {
+        Lang::De => {
+            format!("ferrosheet kann diese Datei nicht bearbeiten, nur anzeigen. Grund: {reason}")
+        }
+        Lang::En => format!("ferrosheet can show this file but not edit it. Reason: {reason}"),
+    }
 }
 
 pub fn save_question(file: &str) -> String {
