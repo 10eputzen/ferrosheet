@@ -73,7 +73,9 @@ Download the latest build from [Releases](https://github.com/10eputzen/ferroshee
 **Updates:** at start ferrosheet asks GitHub for the latest release tag, in the background and
 nothing else is sent. If there is a newer version, it is downloaded in the background too, and only
 then the status bar offers a restart. The restart is instant and comes back with the same
-window, file and sheet; without it, the next start picks up the new version. Set `FERROSHEET_NO_UPDATE=1` to
+window, file and sheet; without it, the next start picks up the new version. Every release is
+signed, and a download without a valid signature is discarded. If the new version fails right
+after starting, the previous one comes back and that version is skipped. Set `FERROSHEET_NO_UPDATE=1` to
 turn the check off. Needs Windows 11 or a Linux with `curl` and `tar`.
 
 From source, with Rust installed:

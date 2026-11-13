@@ -79,6 +79,20 @@ jobs:
         with:
           pattern: ferrosheet-*
           merge-multiple: true
+      # The updater only installs archives with a valid signature over the archive plus
+      # a line naming tag and asset (see crates/ferrosheet/src/update.rs).
+      - name: Sign
+        env:
+          UPDATE_SIGNING_KEY: ${{ secrets.UPDATE_SIGNING_KEY }}
+        run: |
+          test -n "$UPDATE_SIGNING_KEY" || { echo "secret UPDATE_SIGNING_KEY missing"; exit 1; }
+          key=$(mktemp)
+          printf '%s\n' "$UPDATE_SIGNING_KEY" > "$key"
+          for f in ferrosheet-*.zip ferrosheet-*.tar.gz; do
+            { cat "$f"; printf '\nferrosheet %s %s\n' "$GITHUB_REF_NAME" "$f"; } > msg
+            openssl pkeyutl -sign -inkey "$key" -rawin -in msg -out "$f.sig"
+          done
+          rm -f "$key" msg
       - uses: softprops/action-gh-release@8a0cd651e5b2365bd640854a3fa5dfc70e4875f3 # v3.0.4
         with:
           files: ferrosheet-*
