@@ -1568,7 +1568,15 @@ mod tests {
             std::thread::sleep(Duration::from_millis(5));
             h.step();
         }
-        h.run();
+        // The background loader may still repaint for a few frames: wait until it is quiet,
+        // so a later `h.run()` never hits the step limit on a slow machine.
+        while h.try_run().is_err() {
+            assert!(
+                start.elapsed() < Duration::from_secs(10),
+                "app kept repainting"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
     }
 
     fn cursor(h: &mut Harness<'_, App>) -> CellPos {
