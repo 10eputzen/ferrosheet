@@ -9,8 +9,8 @@ use std::sync::mpsc::{Receiver, TryRecvError};
 
 use eframe::egui::{self, Event, Key, Modifiers, ViewportCommand};
 use ferrosheet_core::{
-    CellPos, CellStyle, CopyFormat, EXTENSIONS, Query, Selection, Sheet, StyleChange, TextFormat,
-    cell_address, copy_text, find_all,
+    CellPos, CellStyle, CopyFormat, EXTENSIONS, Lines, Loss, Query, Selection, Sheet, StyleChange,
+    TextFormat, cell_address, copy_text, find_all,
 };
 
 use editing::{After, Engine, Op};
@@ -39,7 +39,14 @@ enum Cmd {
     Redo,
     Cut,
     Copy(CopyFormat),
+    /// Asks the system for the clipboard; it arrives as a paste event.
+    Paste,
     Clear,
+    /// Insert rows (below: after the selection) or columns (right: after it).
+    InsertRows(bool),
+    InsertCols(bool),
+    DeleteRows,
+    DeleteCols,
     Find,
     Bold,
     Italic,
@@ -175,6 +182,8 @@ pub struct App {
     rename: Option<(usize, String, bool)>,
     /// Asking whether to delete this sheet.
     confirm_delete: Option<usize>,
+    /// Warning before overwriting an .xlsx: what would be lost, and what to do after saving.
+    lossy: Option<(Vec<Loss>, Option<After>)>,
 }
 
 impl App {
@@ -396,7 +405,12 @@ impl App {
                 self.clear_selection(ctx);
             }
             Cmd::Copy(f) => self.copy(ctx, f),
+            Cmd::Paste => ctx.send_viewport_cmd(ViewportCommand::RequestPaste),
             Cmd::Clear => self.clear_selection(ctx),
+            Cmd::InsertRows(below) => self.lines(ctx, Lines::Rows, true, below),
+            Cmd::InsertCols(right) => self.lines(ctx, Lines::Cols, true, right),
+            Cmd::DeleteRows => self.lines(ctx, Lines::Rows, false, false),
+            Cmd::DeleteCols => self.lines(ctx, Lines::Cols, false, false),
             Cmd::Find => {
                 self.search.open = true;
                 self.search.focus = true;
@@ -622,6 +636,7 @@ impl App {
     fn keyboard(&mut self, ctx: &egui::Context) {
         let mut copy = None;
         let mut cut = false;
+        let mut paste = None;
         let mut actions = Vec::new();
         let mut typed = String::new();
         ctx.input(|i| {
@@ -629,6 +644,7 @@ impl App {
                 match e {
                     Event::Copy => copy = Some(CopyFormat::Display),
                     Event::Cut => cut = true,
+                    Event::Paste(t) => paste = Some(t.clone()),
                     Event::Text(t) => typed.push_str(t),
                     Event::Key {
                         key,
@@ -641,7 +657,7 @@ impl App {
             }
         });
         let editing = ctx.memory(|m| m.focused().is_some());
-        let modal = self.confirm.is_some() || self.error.is_some();
+        let modal = self.confirm.is_some() || self.error.is_some() || self.lossy.is_some();
         // Typing on a cell starts editing it with what was typed.
         if !editing && !modal && !typed.is_empty() && !self.editing_cell() {
             self.start_edit(Some(typed));
@@ -699,6 +715,9 @@ impl App {
         }
         if cut && !editing && !modal {
             self.run(ctx, Cmd::Cut);
+        }
+        if let Some(t) = paste.filter(|_| !editing && !modal && !self.editing_cell()) {
+            self.paste(ctx, t);
         }
         // Ctrl + mouse wheel
         let zoom = ctx.input(|i| i.zoom_delta());
@@ -776,6 +795,9 @@ impl App {
                 item(ui, &mut cmd, text::redo(), "Ctrl+Y", view, Cmd::Redo);
                 ui.separator();
                 edit_items(ui, &mut cmd, view);
+                ui.separator();
+                row_items(ui, &mut cmd, view);
+                col_items(ui, &mut cmd, view);
                 ui.separator();
                 item(ui, &mut cmd, text::find(), "Ctrl+F", doc, Cmd::Find);
             });
@@ -1061,6 +1083,8 @@ impl App {
                 );
                 item(ui, &mut cmd, text::fit_width(), "", true, Cmd::FitCols);
                 ui.separator();
+                col_items(ui, &mut cmd, true);
+                ui.separator();
                 edit_items(ui, &mut cmd, true);
             });
         }
@@ -1068,6 +1092,8 @@ impl App {
             r.context_menu(|ui| {
                 item(ui, &mut cmd, text::select_row(), "", true, Cmd::SelectRows);
                 item(ui, &mut cmd, text::fit_height(), "", true, Cmd::FitRows);
+                ui.separator();
+                row_items(ui, &mut cmd, true);
                 ui.separator();
                 edit_items(ui, &mut cmd, true);
             });
@@ -1370,6 +1396,7 @@ impl eframe::App for App {
         }
         self.update_title(&ctx);
         self.confirm_modal(&ctx);
+        self.lossy_modal(&ctx);
         self.delete_sheet_modal(&ctx);
         self.about_modal(&ctx);
         self.error_modal(&ctx);
@@ -1399,7 +1426,36 @@ fn edit_items(ui: &mut egui::Ui, cmd: &mut Option<Cmd>, on: bool) {
     );
     let raw = Cmd::Copy(CopyFormat::Invariant);
     item(ui, cmd, text::copy_raw(), "Ctrl+Shift+C", on, raw);
+    item(ui, cmd, text::paste(), "Ctrl+V", on, Cmd::Paste);
     item(ui, cmd, text::clear_contents(), "Del", on, Cmd::Clear);
+}
+
+fn row_items(ui: &mut egui::Ui, cmd: &mut Option<Cmd>, on: bool) {
+    let above = Cmd::InsertRows(false);
+    item(ui, cmd, text::insert_rows_above(), "", on, above);
+    item(
+        ui,
+        cmd,
+        text::insert_rows_below(),
+        "",
+        on,
+        Cmd::InsertRows(true),
+    );
+    item(ui, cmd, text::delete_rows(), "", on, Cmd::DeleteRows);
+}
+
+fn col_items(ui: &mut egui::Ui, cmd: &mut Option<Cmd>, on: bool) {
+    let left = Cmd::InsertCols(false);
+    item(ui, cmd, text::insert_cols_left(), "", on, left);
+    item(
+        ui,
+        cmd,
+        text::insert_cols_right(),
+        "",
+        on,
+        Cmd::InsertCols(true),
+    );
+    item(ui, cmd, text::delete_cols(), "", on, Cmd::DeleteCols);
 }
 
 fn format_items(ui: &mut egui::Ui, cmd: &mut Option<Cmd>, st: CellStyle) {
@@ -1477,7 +1533,7 @@ mod tests {
     use std::path::{Path, PathBuf};
     use std::time::{Duration, Instant};
 
-    use eframe::egui::{Event, Key, Modifiers, OutputCommand};
+    use eframe::egui::{self, Event, Key, Modifiers, OutputCommand};
     use egui_kittest::Harness;
     use egui_kittest::kittest::Queryable;
     use ferrosheet_core::{CellPos, CellValue, Locale, Selection, Workbook};
@@ -1903,6 +1959,166 @@ mod tests {
         settle(&mut h, |app| {
             app.active_view().unwrap().sheet.style(1, 1).bold
         });
+    }
+
+    fn formula(h: &mut Harness<'_, App>, r: u32, c: u32) -> Option<String> {
+        let v = h.state_mut().active_view().unwrap();
+        v.formulas.get(&(r, c)).cloned()
+    }
+
+    #[test]
+    fn ctrl_v_pastes_a_block_and_one_undo_takes_it_back() {
+        let mut h = open(demo());
+        select(&mut h, 10, 0);
+        // what Excel puts on the clipboard: tabs, CRLF, a trailing line break
+        h.event(Event::Paste("a\t=1+1\r\n3\t\"x\ty\"\r\n".into()));
+        settle(&mut h, |app| {
+            app.active_view().unwrap().sheet.value(10, 0) == &CellValue::Text("a".into())
+        });
+        assert_eq!(value(&mut h, 10, 1), CellValue::Number(2.0));
+        assert_eq!(formula(&mut h, 10, 1).as_deref(), Some("=1+1"));
+        assert_eq!(value(&mut h, 11, 0), CellValue::Number(3.0));
+        assert_eq!(value(&mut h, 11, 1), CellValue::Text("x\ty".into()));
+        let sel = h.state_mut().active_view().unwrap().grid.selection;
+        assert_eq!(sel.bounds(), (CellPos::new(10, 0), CellPos::new(11, 1)));
+
+        h.key_press_modifiers(Modifiers::COMMAND, Key::Z);
+        settle(&mut h, |app| {
+            app.active_view().unwrap().sheet.value(10, 0) == &CellValue::Empty
+        });
+        assert_eq!(value(&mut h, 11, 1), CellValue::Empty);
+        assert_eq!(formula(&mut h, 10, 1), None);
+    }
+
+    #[test]
+    fn pasting_one_value_fills_the_selection_and_the_edit_menu_offers_paste() {
+        let mut h = open(demo());
+        h.state_mut().active_view().unwrap().grid.selection = Selection {
+            anchor: CellPos::new(10, 0),
+            cursor: CellPos::new(12, 1),
+        };
+        h.event(Event::Paste("5\n".into()));
+        settle(&mut h, |app| {
+            app.active_view().unwrap().sheet.value(12, 1) == &CellValue::Number(5.0)
+        });
+        assert_eq!(value(&mut h, 10, 0), CellValue::Number(5.0));
+        assert_eq!(value(&mut h, 11, 1), CellValue::Number(5.0));
+
+        // The menu asks the system for the clipboard, which then arrives as a paste.
+        h.get_by_label("Edit").click();
+        h.run();
+        h.get_by_label_contains(text::paste()).click();
+        h.step();
+        let asked = h.output().viewport_output.values().any(|v| {
+            v.commands
+                .iter()
+                .any(|c| matches!(c, egui::ViewportCommand::RequestPaste))
+        });
+        assert!(asked);
+    }
+
+    #[test]
+    fn rows_and_columns_are_inserted_and_deleted_and_formulas_follow() {
+        let mut h = open(demo());
+        let item = value(&mut h, 1, 0);
+        assert_eq!(formula(&mut h, 6, 3).as_deref(), Some("=SUM(D2:D5)"));
+        select(&mut h, 1, 0);
+        h.get_by_label("Edit").click();
+        h.run();
+        h.get_by_label(text::insert_rows_above()).click();
+        settle(&mut h, |app| {
+            app.active_view().unwrap().sheet.value(2, 0) == &item
+        });
+        assert_eq!(value(&mut h, 1, 0), CellValue::Empty);
+        assert_eq!(formula(&mut h, 7, 3).as_deref(), Some("=SUM(D3:D6)"));
+        assert_eq!(formula(&mut h, 2, 3).as_deref(), Some("=B3*C3*(1-G3)"));
+
+        h.key_press_modifiers(Modifiers::COMMAND, Key::Z);
+        settle(&mut h, |app| {
+            app.active_view().unwrap().sheet.value(1, 0) == &item
+        });
+        assert_eq!(formula(&mut h, 6, 3).as_deref(), Some("=SUM(D2:D5)"));
+
+        // a column to the right of B, then delete it again
+        select(&mut h, 0, 1);
+        let header = value(&mut h, 0, 2);
+        run(&mut h, Cmd::InsertCols(true));
+        settle(&mut h, |app| {
+            app.active_view().unwrap().sheet.value(0, 3) == &header
+        });
+        assert_eq!(formula(&mut h, 1, 4).as_deref(), Some("=B2*D2*(1-H2)"));
+        select(&mut h, 0, 2);
+        run(&mut h, Cmd::DeleteCols);
+        settle(&mut h, |app| {
+            app.active_view().unwrap().sheet.value(0, 2) == &header
+        });
+        assert_eq!(formula(&mut h, 1, 3).as_deref(), Some("=B2*C2*(1-G2)"));
+
+        // deleting a row moves the sum up and shrinks it
+        select(&mut h, 2, 0);
+        run(&mut h, Cmd::DeleteRows);
+        settle(&mut h, |app| {
+            app.active_view()
+                .unwrap()
+                .formulas
+                .get(&(5, 3))
+                .is_some_and(|f| f == "=SUM(D2:D4)")
+        });
+    }
+
+    /// An .xlsx with a comment, which saving cannot keep.
+    fn with_comment(name: &str) -> PathBuf {
+        let path = scratch_copy(name, b"");
+        let mut wb = rust_xlsxwriter::Workbook::new();
+        let ws = wb.add_worksheet();
+        ws.write(0, 0, 1).unwrap();
+        ws.insert_note(0, 0, &rust_xlsxwriter::Note::new("note"))
+            .unwrap();
+        wb.save(&path).unwrap();
+        path
+    }
+
+    fn edit_a1(h: &mut Harness<'_, App>, n: f64) {
+        select(h, 0, 0);
+        h.event(Event::Text(n.to_string()));
+        h.run();
+        h.key_press(Key::Enter);
+        settle(h, |app| {
+            app.active_view().unwrap().sheet.value(0, 0) == &CellValue::Number(n)
+        });
+    }
+
+    #[test]
+    fn overwriting_an_xlsx_that_loses_content_warns_first() {
+        let path = with_comment("lossy.xlsx");
+        let mut h = open(path.clone());
+        edit_a1(&mut h, 2.0);
+        h.key_press_modifiers(Modifiers::COMMAND, Key::S);
+        h.run();
+        let losses = &[ferrosheet_core::Loss::Comments];
+        h.get_by_label(&text::lossy_question("lossy.xlsx", losses));
+        h.get_by_label(text::cancel()).click();
+        h.run();
+        assert!(h.state().lossy.is_none());
+        assert!(h.state().dirty());
+        assert_eq!(ferrosheet_core::save_losses(&path), losses);
+
+        h.key_press_modifiers(Modifiers::COMMAND, Key::S);
+        h.run();
+        h.get_by_label(text::save_anyway()).click();
+        settle(&mut h, |app| !app.dirty());
+        assert!(ferrosheet_core::save_losses(&path).is_empty());
+        let mut wb = Workbook::open(&path, Locale::Invariant).unwrap();
+        assert_eq!(
+            wb.load_sheet(0).unwrap().value(0, 0),
+            &CellValue::Number(2.0)
+        );
+
+        // nothing left to lose: the next save goes straight through
+        edit_a1(&mut h, 3.0);
+        h.key_press_modifiers(Modifiers::COMMAND, Key::S);
+        settle(&mut h, |app| !app.dirty());
+        assert!(h.state().lossy.is_none());
     }
 
     fn run(h: &mut Harness<'_, App>, cmd: Cmd) {

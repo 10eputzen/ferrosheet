@@ -12,7 +12,7 @@ Spreadsheet functions (SUM, VLOOKUP, …) have their own list: [function parity]
 | Open xls, xlsx, xlsm, xlsb, ods | ✅ | ✅ |
 | Open csv, tsv | ✅ (import dialog) | ✅ delimiter, encoding and decimals detected, no dialog; codes with leading zeros stay text |
 | Open other formats (Numbers, dbf, html, xml, Lotus) | ✅ | ❌ |
-| Save | all formats | 🟡 xlsx and csv in place, other formats as `.xlsx` |
+| Save | all formats | 🟡 xlsx and csv in place, other formats as `.xlsx`. An xlsx keeps values, formulas, cell formatting, number formats, merged cells, widths, heights, frozen panes, links, conditional formatting and names; comments, drop-downs, filters, tables, charts/pictures, pivot tables and print settings are lost, and ferrosheet warns before overwriting such a file |
 | Export PDF, html | ✅ | ❌ |
 | Password-protected files | ✅ | ❌ |
 | Templates | ✅ | ❌ |
@@ -57,8 +57,8 @@ Spreadsheet functions (SUM, VLOOKUP, …) have their own list: [function parity]
 | --- | --- | --- |
 | Edit cells | ✅ | ✅ |
 | Undo, redo | ✅ | ✅ |
-| Paste | ✅ | 🟡 phase 2 |
-| Insert and delete rows, columns, sheets | ✅ | 🟡 phase 2 |
+| Paste | ✅ | ✅ tab-separated text from Excel, Sheets or ferrosheet (Ctrl+V, *Edit → Paste*); one value fills the selection; one undo step; values only, no formatting |
+| Insert and delete rows, columns, sheets | ✅ | ✅ right-click a row/column header or *Edit*; formulas follow. Undoing a delete brings the cells back, but formulas that pointed into them stay `#REF!` (engine limitation) |
 | Format cells: bold, italic, colour, number format | ✅ | ✅ shown for what is set in ferrosheet |
 | Format cells: fonts, borders, alignment, styles | ✅ | ❌ |
 | Merge cells | ✅ | ❌ |

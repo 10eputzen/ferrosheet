@@ -8,7 +8,8 @@ use std::sync::mpsc::{Receiver, TryRecvError, channel};
 
 use eframe::egui::{self, Color32, ViewportCommand};
 use ferrosheet_core::{
-    CellPos, EditSession, NumberFormat, Selection, Sheet, StyleChange, write_csv,
+    CellPos, EditSession, Lines, NumberFormat, Selection, Sheet, StyleChange, save_losses,
+    write_csv,
 };
 
 use super::{App, Doc, SheetView};
@@ -29,6 +30,19 @@ pub(super) enum Op {
         sheet: usize,
         sel: Selection,
         change: StyleChange,
+    },
+    Paste {
+        sheet: usize,
+        sel: Selection,
+        text: String,
+    },
+    /// Inserts (`insert`) or deletes `count` rows or columns at `at`.
+    Lines {
+        sheet: usize,
+        lines: Lines,
+        insert: bool,
+        at: u32,
+        count: u32,
     },
     Undo,
     Redo,
@@ -115,6 +129,21 @@ fn refresh(v: &mut SheetView, s: &EditSession, idx: usize) {
         sheet.set(u.row, u.col, u.value, u.formatted, u.style);
     }
     v.formulas.extend(s.formulas(idx));
+}
+
+/// Shows sheets whose rows or columns moved anew from the model.
+fn rebuild_moved(doc: &mut Doc) {
+    let Engine::Ready(s) = &mut doc.engine else {
+        return;
+    };
+    for idx in s.take_moved() {
+        if let Some(Some(v)) = doc.sheets.get_mut(idx) {
+            let (sheet, formulas) = s.snapshot(idx);
+            v.sheet = Arc::new(sheet);
+            v.formulas = formulas;
+            v.formulas_loaded = true;
+        }
+    }
 }
 
 pub(super) fn refresh_sheet(doc: &mut Doc, idx: usize) {
@@ -272,6 +301,25 @@ impl App {
             };
             let result = match op {
                 Op::Input { sheet, pos, text } => s.set_input(sheet, pos.row, pos.col, &text),
+                Op::Paste { sheet, sel, text } => s.paste(sheet, &sel, &text).map(|pasted| {
+                    if let Some(Some(v)) = doc.sheets.get_mut(sheet) {
+                        v.grid.selection = pasted;
+                    }
+                }),
+                Op::Lines {
+                    sheet,
+                    lines,
+                    insert: true,
+                    at,
+                    count,
+                } => s.insert_lines(sheet, lines, at, count),
+                Op::Lines {
+                    sheet,
+                    lines,
+                    at,
+                    count,
+                    ..
+                } => s.delete_lines(sheet, lines, at, count),
                 Op::Clear { sheet, sel } => s.clear(sheet, &sel),
                 Op::Style { sheet, sel, change } => s.set_style(sheet, &sel, change),
                 Op::Undo => {
@@ -291,6 +339,7 @@ impl App {
                 }
             };
             sync_sheets(doc);
+            rebuild_moved(doc);
             for idx in 0..doc.sheets.len() {
                 refresh_sheet(doc, idx);
             }
@@ -346,7 +395,17 @@ impl App {
         }
         if saves_in_place(doc) {
             let path = doc.path.clone();
-            self.queue(ctx, Op::Save { path, then });
+            // Overwriting an .xlsx drops what the engine cannot write: say so first.
+            let losses = if is_xlsx(&path) {
+                save_losses(&path)
+            } else {
+                Vec::new()
+            };
+            if losses.is_empty() {
+                self.queue(ctx, Op::Save { path, then });
+            } else {
+                self.lossy = Some((losses, then));
+            }
         } else {
             self.save_as(ctx, then);
         }
@@ -367,6 +426,49 @@ impl App {
                 path.set_extension("xlsx");
             }
             self.queue(ctx, Op::Save { path, then });
+        }
+    }
+
+    /// Overwrite an .xlsx anyway, save a copy instead, or cancel.
+    pub(super) fn lossy_modal(&mut self, ctx: &egui::Context) {
+        let Some((losses, then)) = self.lossy.clone() else {
+            return;
+        };
+        let file = self
+            .doc
+            .as_ref()
+            .and_then(|d| d.path.file_name())
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let mut choice = None;
+        let resp = egui::Modal::new(egui::Id::unique("lossy_save")).show(ctx, |ui| {
+            ui.set_max_width(460.0);
+            ui.heading(text::lossy_title());
+            ui.label(text::lossy_question(&file, &losses));
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                if ui.button(text::save_copy()).clicked() {
+                    choice = Some(true);
+                }
+                if ui.button(text::save_anyway()).clicked() {
+                    choice = Some(false);
+                }
+                if ui.button(text::cancel()).clicked() {
+                    self.lossy = None;
+                }
+            });
+        });
+        if resp.should_close() {
+            self.lossy = None;
+        }
+        if let Some(copy) = choice {
+            self.lossy = None;
+            if copy {
+                self.save_as(ctx, then);
+            } else if let Some(doc) = &self.doc {
+                let path = doc.path.clone();
+                self.queue(ctx, Op::Save { path, then });
+            }
         }
     }
 
@@ -507,6 +609,44 @@ impl App {
 
     pub(super) fn editing_cell(&mut self) -> bool {
         self.active_view().is_some_and(|v| v.grid.edit.is_some())
+    }
+
+    /// Ctrl+V: pastes tab-separated text at the selection.
+    pub(super) fn paste(&mut self, ctx: &egui::Context, text: String) {
+        let Some(doc) = &self.doc else { return };
+        let sheet = doc.active;
+        let Some(Some(v)) = doc.sheets.get(sheet) else {
+            return;
+        };
+        if text.is_empty() {
+            return;
+        }
+        let sel = v.grid.selection;
+        self.queue(ctx, Op::Paste { sheet, sel, text });
+    }
+
+    /// Inserts as many rows or columns as are selected, before or after the selection,
+    /// or deletes the selected ones.
+    pub(super) fn lines(&mut self, ctx: &egui::Context, lines: Lines, insert: bool, after: bool) {
+        let Some(doc) = &self.doc else { return };
+        let sheet = doc.active;
+        let Some(Some(v)) = doc.sheets.get(sheet) else {
+            return;
+        };
+        let (tl, br) = v.grid.selection.bounds();
+        let (first, last) = match lines {
+            Lines::Rows => (tl.row, br.row),
+            Lines::Cols => (tl.col, br.col),
+        };
+        let at = if insert && after { last + 1 } else { first };
+        let op = Op::Lines {
+            sheet,
+            lines,
+            insert,
+            at,
+            count: last - first + 1,
+        };
+        self.queue(ctx, op);
     }
 
     /// Delete: empties the selected cells.

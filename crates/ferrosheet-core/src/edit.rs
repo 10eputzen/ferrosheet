@@ -12,7 +12,7 @@ use ironcalc::base::expressions::types::Area;
 use ironcalc::base::types::Color;
 use ironcalc::base::{Model, UserModel};
 
-use crate::{CellError, CellStyle, CellValue, Locale, Selection, Sheet};
+use crate::{CellError, CellPos, CellStyle, CellValue, Locale, Selection, Sheet};
 
 /// Number formats offered in the format bar.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -65,8 +65,23 @@ pub struct CellUpdate {
     pub style: CellStyle,
 }
 
+/// Rows or columns, for inserting and deleting whole lines.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Lines {
+    Rows,
+    Cols,
+}
+
 /// Formulas of a sheet by (row, col), each starting with `=`.
 type Formulas = HashMap<(u32, u32), String>;
+
+/// One entry of the model's undo history, as far as the display cares: whether it moved
+/// the cells of a sheet (by its id), so the whole sheet has to be shown anew.
+#[derive(Clone, Copy)]
+enum Step {
+    Cells,
+    Moved(u32),
+}
 
 pub struct EditSession {
     model: UserModel<'static>,
@@ -74,6 +89,11 @@ pub struct EditSession {
     /// Per sheet id: cells with a formula plus every cell changed here. After any change
     /// these are the only cells whose shown value can differ from the model.
     watched: HashMap<u32, BTreeSet<(u32, u32)>>,
+    /// Mirrors the model's undo and redo stacks.
+    undo_steps: Vec<Step>,
+    redo_steps: Vec<Step>,
+    /// Sheet ids whose rows or columns moved since [`EditSession::take_moved`].
+    moved: BTreeSet<u32>,
 }
 
 fn locale_id(locale: Locale) -> &'static str {
@@ -161,7 +181,44 @@ impl EditSession {
             model: UserModel::from_model(model),
             locale,
             watched,
+            undo_steps: Vec::new(),
+            redo_steps: Vec::new(),
+            moved: BTreeSet::new(),
         }
+    }
+
+    fn done(&mut self, step: Step) {
+        self.undo_steps.push(step);
+        self.redo_steps.clear();
+        if let Step::Moved(id) = step {
+            self.relayout(id);
+        }
+    }
+
+    /// Cells moved: formulas now sit elsewhere, and the sheet is shown anew.
+    fn relayout(&mut self, id: u32) {
+        let model = self.model.get_model();
+        let Some(ws) = model.workbook.worksheets.iter().find(|w| w.sheet_id == id) else {
+            return;
+        };
+        let formulas: Vec<_> = ws
+            .sheet_data
+            .cells()
+            .filter(|(_, _, cell)| cell.has_formula())
+            .map(|(r, c, _)| (r as u32 - 1, c as u32 - 1))
+            .collect();
+        self.watched.entry(id).or_default().extend(formulas);
+        self.moved.insert(id);
+    }
+
+    /// Sheets (by position) whose rows or columns moved since the last call; show them
+    /// anew from [`EditSession::snapshot`].
+    pub fn take_moved(&mut self) -> Vec<usize> {
+        let ids = self.sheet_ids();
+        std::mem::take(&mut self.moved)
+            .into_iter()
+            .filter_map(|id| ids.iter().position(|&i| i == id))
+            .collect()
     }
 
     pub fn sheet_names(&self) -> Vec<String> {
@@ -181,7 +238,9 @@ impl EditSession {
 
     /// Appends an empty sheet with a free name ("Sheet2", …).
     pub fn add_sheet(&mut self) -> Result<(), String> {
-        self.model.new_sheet()
+        self.model.new_sheet()?;
+        self.done(Step::Cells);
+        Ok(())
     }
 
     pub fn rename_sheet(&mut self, sheet: usize, name: &str) -> Result<(), String> {
@@ -189,14 +248,18 @@ impl EditSession {
         if name.is_empty() {
             return Err("empty sheet name".into());
         }
-        self.model.rename_sheet(sheet as u32, name)
+        self.model.rename_sheet(sheet as u32, name)?;
+        self.done(Step::Cells);
+        Ok(())
     }
 
     pub fn delete_sheet(&mut self, sheet: usize) -> Result<(), String> {
         if self.sheet_ids().len() <= 1 {
             return Err("a workbook needs at least one sheet".into());
         }
-        self.model.delete_sheet(sheet as u32)
+        self.model.delete_sheet(sheet as u32)?;
+        self.done(Step::Cells);
+        Ok(())
     }
 
     /// The whole sheet as the model has it, for sheets the viewer never loaded (a new
@@ -230,6 +293,7 @@ impl EditSession {
     pub fn set_input(&mut self, sheet: usize, r: u32, c: u32, input: &str) -> Result<(), String> {
         self.model
             .set_user_input(sheet as u32, r as i32 + 1, c as i32 + 1, input)?;
+        self.done(Step::Cells);
         self.watch(sheet, r, c, r, c);
         Ok(())
     }
@@ -237,6 +301,7 @@ impl EditSession {
     /// Empties the selected cells, keeping their style.
     pub fn clear(&mut self, sheet: usize, sel: &Selection) -> Result<(), String> {
         self.model.range_clear_contents(&area(sheet, sel))?;
+        self.done(Step::Cells);
         let (r0, c0, r1, c1) = bounds(sel);
         self.watch(sheet, r0, c0, r1, c1);
         Ok(())
@@ -257,9 +322,104 @@ impl EditSession {
         };
         self.model
             .update_range_style(&area(sheet, sel), path, &value)?;
+        self.done(Step::Cells);
         let (r0, c0, r1, c1) = bounds(sel);
         self.watch(sheet, r0, c0, r1, c1);
         Ok(())
+    }
+
+    /// Pastes tab-separated text (as Excel, Sheets and ferrosheet copy it) at the top
+    /// left of `sel`, each value read like typed input. A single value fills the whole
+    /// selection. One undo step. Returns the cells that were pasted into.
+    pub fn paste(
+        &mut self,
+        sheet: usize,
+        sel: &Selection,
+        text: &str,
+    ) -> Result<Selection, String> {
+        let mut rows = parse_tsv(text);
+        let mut width = rows.iter().map(Vec::len).max().unwrap_or(0);
+        if width == 0 {
+            return Ok(*sel);
+        }
+        let (r0, c0, r1, c1) = bounds(sel);
+        if rows.len() == 1 && width == 1 {
+            let v = rows[0][0].clone();
+            width = (c1 - c0 + 1) as usize;
+            rows = vec![vec![v; width]; (r1 - r0 + 1) as usize];
+        }
+        // IronCalc expects a rectangle; a short row clears the rest of it anyway.
+        let mut out = ::csv::WriterBuilder::new()
+            .delimiter(b'\t')
+            .terminator(::csv::Terminator::Any(b'\n'))
+            .from_writer(Vec::new());
+        for row in &mut rows {
+            row.resize(width, String::new());
+            out.write_record(&*row).map_err(|e| e.to_string())?;
+        }
+        let bytes = out.into_inner().map_err(|e| e.to_string())?;
+        let csv = String::from_utf8(bytes).map_err(|e| e.to_string())?;
+        let target = Area {
+            sheet: sheet as u32,
+            row: r0 as i32 + 1,
+            column: c0 as i32 + 1,
+            width: width as i32,
+            height: rows.len() as i32,
+        };
+        // The model selects what was pasted and insists its cursor lies inside.
+        self.model.set_selected_sheet(target.sheet)?;
+        self.model.set_selected_cell(target.row, target.column)?;
+        self.model.paste_csv_string(&target, &csv)?;
+        self.done(Step::Cells);
+        let (r1, c1) = (r0 + rows.len() as u32 - 1, c0 + width as u32 - 1);
+        self.watch(sheet, r0, c0, r1, c1);
+        Ok(Selection {
+            anchor: CellPos::new(r0, c0),
+            cursor: CellPos::new(r1, c1),
+        })
+    }
+
+    /// Inserts `count` empty rows or columns before `at` (0-based). Formulas pointing
+    /// at moved cells follow them.
+    pub fn insert_lines(
+        &mut self,
+        sheet: usize,
+        lines: Lines,
+        at: u32,
+        count: u32,
+    ) -> Result<(), String> {
+        let (s, at, n) = (sheet as u32, at as i32 + 1, count as i32);
+        match lines {
+            Lines::Rows => self.model.insert_rows(s, at, n)?,
+            Lines::Cols => self.model.insert_columns(s, at, n)?,
+        }
+        self.lines_done(sheet);
+        Ok(())
+    }
+
+    /// Deletes `count` rows or columns from `at` (0-based). Formulas pointing at deleted
+    /// cells show `#REF!`, the others follow their cells.
+    pub fn delete_lines(
+        &mut self,
+        sheet: usize,
+        lines: Lines,
+        at: u32,
+        count: u32,
+    ) -> Result<(), String> {
+        let (s, at, n) = (sheet as u32, at as i32 + 1, count as i32);
+        match lines {
+            Lines::Rows => self.model.delete_rows(s, at, n)?,
+            Lines::Cols => self.model.delete_columns(s, at, n)?,
+        }
+        self.lines_done(sheet);
+        Ok(())
+    }
+
+    fn lines_done(&mut self, sheet: usize) {
+        match self.sheet_id(sheet) {
+            Some(id) => self.done(Step::Moved(id)),
+            None => self.done(Step::Cells),
+        }
     }
 
     fn watch(&mut self, sheet: usize, r0: u32, c0: u32, r1: u32, c1: u32) {
@@ -278,11 +438,29 @@ impl EditSession {
 
     /// Undoes the last change; `false` when there is nothing to undo.
     pub fn undo(&mut self) -> bool {
-        self.model.can_undo() && self.model.undo().is_ok()
+        if !(self.model.can_undo() && self.model.undo().is_ok()) {
+            return false;
+        }
+        if let Some(step) = self.undo_steps.pop() {
+            self.redo_steps.push(step);
+            if let Step::Moved(id) = step {
+                self.relayout(id);
+            }
+        }
+        true
     }
 
     pub fn redo(&mut self) -> bool {
-        self.model.can_redo() && self.model.redo().is_ok()
+        if !(self.model.can_redo() && self.model.redo().is_ok()) {
+            return false;
+        }
+        if let Some(step) = self.redo_steps.pop() {
+            self.undo_steps.push(step);
+            if let Step::Moved(id) = step {
+                self.relayout(id);
+            }
+        }
+        true
     }
 
     /// What the cell editor starts with: the formula, or the value as typed.
@@ -411,6 +589,37 @@ fn area(sheet: usize, sel: &Selection) -> Area {
         width: (c1 - c0) as i32 + 1,
         height: (r1 - r0) as i32 + 1,
     }
+}
+
+/// Splits clipboard text into rows of cells: tabs between cells, a line break between
+/// rows, quotes around cells that contain either (as Excel writes them).
+fn parse_tsv(text: &str) -> Vec<Vec<String>> {
+    let text = text
+        .strip_suffix("\r\n")
+        .or_else(|| text.strip_suffix('\n'))
+        .unwrap_or(text);
+    if text.is_empty() {
+        return Vec::new();
+    }
+    let mut reader = ::csv::ReaderBuilder::new()
+        .delimiter(b'\t')
+        .has_headers(false)
+        .flexible(true)
+        .from_reader(text.as_bytes());
+    let mut rows = Vec::new();
+    for record in reader.records() {
+        match record {
+            Ok(r) => rows.push(r.iter().map(str::to_owned).collect()),
+            // Broken quoting: take the lines as they are.
+            Err(_) => {
+                return text
+                    .lines()
+                    .map(|l| l.split('\t').map(str::to_owned).collect())
+                    .collect();
+            }
+        }
+    }
+    rows
 }
 
 fn color_param(c: Option<[u8; 3]>) -> String {
@@ -580,6 +789,110 @@ mod tests {
         );
         let mut s = EditSession::from_sheets(&[(&sheet, &HashMap::new())], Locale::German).unwrap();
         assert!(s.delete_sheet(0).is_err());
+    }
+
+    fn blank(locale: Locale) -> EditSession {
+        let sheet = Sheet::empty("S".into());
+        EditSession::from_sheets(&[(&sheet, &HashMap::new())], locale).unwrap()
+    }
+
+    fn range(r0: u32, c0: u32, r1: u32, c1: u32) -> Selection {
+        Selection {
+            anchor: CellPos::new(r0, c0),
+            cursor: CellPos::new(r1, c1),
+        }
+    }
+
+    #[test]
+    fn pasting_tab_separated_text_fills_a_block_and_is_one_undo_step() {
+        let mut s = blank(Locale::German);
+        s.set_input(0, 5, 5, "keep").unwrap();
+        let text = "Name\tWert\r\nA\t1,5\r\n\"two\nlines\"\t=C3*2\r\n";
+        let pasted = s
+            .paste(0, &Selection::single(CellPos::new(1, 1)), text)
+            .unwrap();
+        assert_eq!(pasted, range(1, 1, 3, 2));
+        let u = s.updates(0);
+        assert_eq!(find(&u, 1, 1).value, CellValue::Text("Name".into()));
+        assert_eq!(find(&u, 2, 2).value, CellValue::Number(1.5));
+        assert_eq!(find(&u, 3, 1).value, CellValue::Text("two\nlines".into()));
+        assert_eq!(s.content(0, 3, 2), "=C3*2");
+        assert_eq!(find(&u, 3, 2).value, CellValue::Number(3.0));
+        assert!(s.undo());
+        let u = s.updates(0);
+        assert_eq!(find(&u, 1, 1).value, CellValue::Empty);
+        assert_eq!(find(&u, 3, 2).value, CellValue::Empty);
+        assert_eq!(find(&u, 5, 5).value, CellValue::Text("keep".into()));
+    }
+
+    #[test]
+    fn a_single_value_fills_the_selection_and_short_rows_are_padded() {
+        let mut s = blank(Locale::Invariant);
+        let sel = range(0, 0, 2, 1);
+        assert_eq!(s.paste(0, &sel, "7\n").unwrap(), sel);
+        let u = s.updates(0);
+        for (r, c) in [(0, 0), (1, 1), (2, 0), (2, 1)] {
+            assert_eq!(find(&u, r, c).value, CellValue::Number(7.0));
+        }
+        let pasted = s.paste(0, &range(4, 0, 4, 0), "a\tb\tc\nd").unwrap();
+        assert_eq!(pasted, range(4, 0, 5, 2));
+        assert_eq!(find(&s.updates(0), 5, 0).value, CellValue::Text("d".into()));
+        // nothing on the clipboard: nothing happens
+        assert_eq!(s.paste(0, &sel, "").unwrap(), sel);
+    }
+
+    #[test]
+    fn inserting_and_deleting_rows_and_columns_moves_formulas_along() {
+        let mut s = blank(Locale::Invariant);
+        s.set_input(0, 0, 0, "2").unwrap();
+        s.set_input(0, 1, 0, "3").unwrap();
+        s.set_input(0, 2, 1, "=A1*A2").unwrap();
+        assert!(s.take_moved().is_empty());
+
+        s.insert_lines(0, Lines::Rows, 1, 2).unwrap();
+        assert_eq!(s.take_moved(), [0]);
+        assert_eq!(s.formula(0, 4, 1).as_deref(), Some("=A1*A4"));
+        let (sheet, formulas) = s.snapshot(0);
+        assert_eq!(sheet.display(3, 0), "3");
+        assert_eq!(sheet.display(4, 1), "6");
+        assert_eq!(formulas.get(&(4, 1)).map(String::as_str), Some("=A1*A4"));
+
+        s.insert_lines(0, Lines::Cols, 0, 1).unwrap();
+        assert_eq!(s.formula(0, 4, 2).as_deref(), Some("=B1*B4"));
+        s.delete_lines(0, Lines::Cols, 0, 1).unwrap();
+        s.delete_lines(0, Lines::Rows, 1, 2).unwrap();
+        assert_eq!(s.formula(0, 2, 1).as_deref(), Some("=A1*A2"));
+
+        s.take_moved();
+
+        // undo moves everything back and asks for a fresh display again
+        assert!(s.undo());
+        assert_eq!(s.take_moved(), [0]);
+        assert_eq!(s.formula(0, 4, 1).as_deref(), Some("=A1*A4"));
+        assert!(s.redo());
+        assert_eq!(s.take_moved(), [0]);
+        assert_eq!(s.formula(0, 2, 1).as_deref(), Some("=A1*A2"));
+        // undoing a plain input does not
+        s.undo();
+        s.take_moved();
+        s.undo();
+        s.undo();
+        s.undo();
+        s.take_moved();
+        s.undo();
+        assert!(s.take_moved().is_empty());
+        assert_eq!(s.formula(0, 2, 1), None);
+    }
+
+    #[test]
+    fn deleting_a_referenced_row_breaks_the_formula() {
+        let mut s = blank(Locale::Invariant);
+        s.set_input(0, 0, 0, "2").unwrap();
+        s.set_input(0, 1, 0, "3").unwrap();
+        s.set_input(0, 2, 1, "=A1*A2").unwrap();
+        s.delete_lines(0, Lines::Rows, 0, 1).unwrap();
+        assert_eq!(s.formula(0, 1, 1).as_deref(), Some("=#REF!*A1"));
+        assert_eq!(s.snapshot(0).0.display(1, 1), "#REF!");
     }
 
     #[test]

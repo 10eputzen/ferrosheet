@@ -4,7 +4,7 @@
 
 use std::sync::OnceLock;
 
-use ferrosheet_core::{LoadError, Locale, NumberFormat};
+use ferrosheet_core::{LoadError, Locale, Loss, NumberFormat};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Lang {
@@ -129,6 +129,16 @@ texts! {
     copy: "Kopieren", "Copy";
     copy_raw: "Rohwerte kopieren", "Copy raw values";
     clear_contents: "Inhalte löschen", "Clear contents";
+    paste: "Einfügen", "Paste";
+    insert_rows_above: "Zeilen oberhalb einfügen", "Insert rows above";
+    insert_rows_below: "Zeilen unterhalb einfügen", "Insert rows below";
+    insert_cols_left: "Spalten links einfügen", "Insert columns left";
+    insert_cols_right: "Spalten rechts einfügen", "Insert columns right";
+    delete_rows: "Zeilen löschen", "Delete rows";
+    delete_cols: "Spalten löschen", "Delete columns";
+    lossy_title: "Nicht alles bleibt erhalten", "Not everything will be kept";
+    save_copy: "Als Kopie speichern …", "Save as copy …";
+    save_anyway: "Trotzdem speichern", "Save anyway";
     find: "Suchen …", "Find …";
     bold_name: "Fett", "Bold";
     italic_name: "Kursiv", "Italic";
@@ -231,6 +241,37 @@ pub fn update_ready(version: &str) -> String {
     match lang() {
         Lang::De => format!("Version {version} bereit – neu starten"),
         Lang::En => format!("Version {version} ready – restart"),
+    }
+}
+
+/// Warning before overwriting an `.xlsx` that holds parts saving drops.
+pub fn lossy_question(file: &str, losses: &[Loss]) -> String {
+    let names: Vec<_> = losses.iter().map(|&l| loss_name(l)).collect();
+    let list = names.join(", ");
+    match lang() {
+        Lang::De => format!(
+            "„{file}“ enthält {list}. ferrosheet kann das noch nicht speichern – beim Überschreiben geht es verloren. Werte, Formeln, Formatierung, verbundene Zellen, Spaltenbreiten und fixierte Bereiche bleiben erhalten."
+        ),
+        Lang::En => format!(
+            "\"{file}\" contains {list}. ferrosheet cannot save these yet – overwriting the file drops them. Values, formulas, formatting, merged cells, column widths and frozen panes are kept."
+        ),
+    }
+}
+
+fn loss_name(l: Loss) -> &'static str {
+    match l {
+        Loss::Comments => pick("Kommentare", "comments"),
+        Loss::Validation => pick(
+            "Dropdown-Listen bzw. Eingaberegeln",
+            "drop-down lists or input rules",
+        ),
+        Loss::Filter => pick("Filter", "filters"),
+        Loss::Tables => pick("formatierte Tabellen", "Excel tables"),
+        Loss::Drawings => pick(
+            "Diagramme, Bilder oder Formen",
+            "charts, pictures or shapes",
+        ),
+        Loss::PivotTables => pick("Pivot-Tabellen", "pivot tables"),
     }
 }
 

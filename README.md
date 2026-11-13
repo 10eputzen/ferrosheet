@@ -24,15 +24,17 @@ question was: why not port that small piece to Rust?
   result in the cell and the formula itself in the formula bar
 - Search across the current sheet or all sheets, as plain text or regular expression
 - Select cells, rows, columns or everything; copy as tab-separated text that pastes into
-  Excel, Google Sheets or an email
+  Excel, Google Sheets or an email, and paste such text back in (Ctrl+V)
+- Insert and delete rows and columns; formulas follow the cells they refer to
 - Edit cells and formulas with recalculation ([IronCalc](https://github.com/ironcalc/IronCalc)),
   undo and redo, bold, italic, text and fill colour, number formats
 - Build formulas by pointing: after `=`, an operator or `(`, click a cell or drag over a
   range to insert its reference; each reference gets its own colour in the formula and
   a matching frame in the grid
 - Save xlsx and csv in place (csv keeps its delimiter, encoding and decimal separator);
-  xls, xlsb and ods are saved as a new `.xlsx`. Values and formulas are kept; fonts,
-  borders and other formatting from the file may be lost
+  xls, xlsb and ods are saved as a new `.xlsx`. An xlsx keeps values, formulas and its
+  formatting; comments, drop-downs, filters, tables and charts are not saved yet, and
+  ferrosheet warns before overwriting a file that has them
 - Resize columns and rows by dragging, double-click an edge to fit the content
 - Light and dark mode, following the system
 - Damaged files end in an error message, never in a crash
@@ -99,10 +101,12 @@ cargo install --path crates/ferrosheet
 | Ctrl+F, F3, Shift+F3, Esc | Search, next hit, previous hit, close |
 | Ctrl+Page Up / Page Down | Previous / next sheet |
 | Ctrl+X | Cut (copy, then empty the cells) |
+| Ctrl+V | Paste tab-separated text at the selection; one value fills the whole selection |
 | Ctrl+Plus, Ctrl+Minus, Ctrl+0, Ctrl+wheel | Zoom the grid in, out, back to 100 % |
 
 Mouse: click a column or row header to select it, drag a header edge to resize,
-double-click an edge to fit. Right-click cells or headers for the usual menu.
+double-click an edge to fit. Right-click cells or headers for the usual menu; the headers
+also insert and delete rows and columns.
 Sheet tabs: "+" adds a sheet, double-click renames, right-click renames or deletes.
 Everything is also in the menu bar (File, Edit, View, Format).
 

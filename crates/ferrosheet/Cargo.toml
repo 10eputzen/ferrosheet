@@ -25,6 +25,7 @@ screenshot = ["dep:image"]
 
 [dev-dependencies]
 egui_kittest = { version = "0.37", features = ["eframe"] }
+rust_xlsxwriter = "0.102"
 
 # Puts the icon into the exe, for Explorer, Start menu, taskbar and associated files.
 [target.'cfg(windows)'.build-dependencies]
