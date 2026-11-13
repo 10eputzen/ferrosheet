@@ -2124,7 +2124,8 @@ mod tests {
     fn run(h: &mut Harness<'_, App>, cmd: Cmd) {
         let ctx = h.ctx.clone();
         h.state_mut().run(&ctx, cmd);
-        h.run();
+        // one frame only: a command may start the background loader, so callers settle
+        h.step();
     }
 
     fn names(h: &Harness<'_, App>) -> Vec<String> {
@@ -2158,6 +2159,7 @@ mod tests {
             app.doc.as_ref().unwrap().names[0] == before[0]
         });
         run(&mut h, Cmd::Switch(0));
+        settle(&mut h, |app| app.active_view().is_some());
         assert_eq!(value(&mut h, 1, 1), CellValue::Number(120.0));
     }
 
