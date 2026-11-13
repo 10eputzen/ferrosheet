@@ -8,8 +8,8 @@ use std::sync::mpsc::{Receiver, TryRecvError, channel};
 
 use eframe::egui::{self, Color32, ViewportCommand};
 use ferrosheet_core::{
-    CellPos, EditSession, Lines, NumberFormat, Selection, Sheet, StyleChange, save_losses,
-    write_csv,
+    CellPos, EditSession, Lines, NumberFormat, Query, Selection, Sheet, StyleChange, ref_text,
+    save_losses, splice, write_csv,
 };
 
 use super::{App, Doc, SheetView};
@@ -43,6 +43,13 @@ pub(super) enum Op {
         insert: bool,
         at: u32,
         count: u32,
+    },
+    /// Find & Replace: one cell (`cell`) or every match in `sheets`.
+    Replace {
+        sheets: Vec<usize>,
+        cell: Option<(usize, CellPos)>,
+        query: Query,
+        with: String,
     },
     Undo,
     Redo,
@@ -123,6 +130,7 @@ fn refresh(v: &mut SheetView, s: &EditSession, idx: usize) {
     if updates.is_empty() {
         return;
     }
+    v.summary = None;
     let sheet = Arc::make_mut(&mut v.sheet);
     for u in updates {
         v.formulas.remove(&(u.row, u.col));
@@ -140,6 +148,7 @@ fn rebuild_moved(doc: &mut Doc) {
         if let Some(Some(v)) = doc.sheets.get_mut(idx) {
             let (sheet, formulas) = s.snapshot(idx);
             v.sheet = Arc::new(sheet);
+            v.summary = None;
             v.formulas = formulas;
             v.formulas_loaded = true;
         }
@@ -322,6 +331,21 @@ impl App {
                 } => s.delete_lines(sheet, lines, at, count),
                 Op::Clear { sheet, sel } => s.clear(sheet, &sel),
                 Op::Style { sheet, sel, change } => s.set_style(sheet, &sel, change),
+                Op::Replace {
+                    sheets,
+                    cell,
+                    query,
+                    with,
+                } => {
+                    let one = cell.map(|c| [c]);
+                    let r = s.replace(&sheets, one.as_ref().map(|c| &c[..]), &query, &with);
+                    if let Ok(n) = r {
+                        self.status = Some((text::replaced(n), f64::NAN));
+                        self.search.after_replace = cell.is_some();
+                        ctx.request_repaint();
+                    }
+                    r.map(|_| ())
+                }
                 Op::Undo => {
                     s.undo();
                     Ok(())
@@ -565,6 +589,43 @@ impl App {
         v.grid.edit = Some(CellEdit::new(pos, original, text));
     }
 
+    /// AutoSum (Σ, Alt+=): `=SUM(…)` over the numbers above the cursor, or left of it,
+    /// with the editor left open so a click on cells can change the range.
+    pub(super) fn autosum(&mut self) {
+        let Some(v) = self.active_view() else { return };
+        let pos = v.grid.selection.cursor;
+        let range = v.sheet.autosum_range(pos).map(|(a, b)| ref_text(a, b));
+        let reference = range.unwrap_or_default();
+        let len = reference.chars().count();
+        self.start_edit(Some(format!("=SUM({reference})")));
+        if let Some(e) = self.active_view().and_then(|v| v.grid.edit.as_mut()) {
+            // the range is the slot a click replaces, like a reference just pointed at
+            e.point = (len > 0).then_some((5, 5 + len));
+            e.cursor = Some(5 + len);
+        }
+    }
+
+    /// Types `s` into the open cell editor at the text cursor.
+    pub(super) fn insert_in_editor(&mut self, ctx: &egui::Context, s: &str) {
+        let Some(e) = self.active_view().and_then(|v| v.grid.edit.as_mut()) else {
+            return;
+        };
+        let id = e.editor_id();
+        let n = e.text.chars().count();
+        let mut state = egui::text_edit::TextEditState::load(ctx, id).unwrap_or_default();
+        let (start, end) = state.cursor.char_range().map_or((n, n), |r| {
+            let r = r.as_sorted_char_range();
+            (r.start.0.min(n), r.end.0.min(n))
+        });
+        let end = splice(&mut e.text, start, end, s);
+        e.point = None;
+        let at = egui::text::CCursor::new(end);
+        state
+            .cursor
+            .set_char_range(Some(egui::text::CCursorRange::one(at)));
+        state.store(ctx, id);
+    }
+
     /// Closes the editor and stores what was typed; `step` moves the cursor on.
     pub(super) fn commit_edit(&mut self, ctx: &egui::Context, step: Option<(i64, i64)>) {
         let Some(doc) = &mut self.doc else { return };
@@ -740,6 +801,15 @@ impl App {
             }
             if let Some(c) = colour_and_number_menus(ui) {
                 change = Some(c);
+            }
+            ui.separator();
+            let editing = self.active_view().is_some_and(|v| v.grid.edit.is_some());
+            if ui
+                .add_enabled(!editing, egui::Button::new(text::autosum()))
+                .on_hover_text(text::autosum_hint())
+                .clicked()
+            {
+                self.autosum();
             }
             let status = self.doc.as_ref().is_some_and(|d| {
                 matches!(d.engine, Engine::WaitingForSheets | Engine::Building(_))

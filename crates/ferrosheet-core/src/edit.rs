@@ -12,7 +12,7 @@ use ironcalc::base::expressions::types::Area;
 use ironcalc::base::types::Color;
 use ironcalc::base::{Model, UserModel};
 
-use crate::{CellError, CellPos, CellStyle, CellValue, Locale, Selection, Sheet};
+use crate::{CellError, CellPos, CellStyle, CellValue, Locale, Query, Selection, Sheet};
 
 /// Number formats offered in the format bar.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -89,9 +89,10 @@ pub struct EditSession {
     /// Per sheet id: cells with a formula plus every cell changed here. After any change
     /// these are the only cells whose shown value can differ from the model.
     watched: HashMap<u32, BTreeSet<(u32, u32)>>,
-    /// Mirrors the model's undo and redo stacks.
-    undo_steps: Vec<Step>,
-    redo_steps: Vec<Step>,
+    /// Mirrors the model's undo and redo stacks: what each step did and how many model
+    /// entries it took (a replace over many cells is one step for the user).
+    undo_steps: Vec<(Step, usize)>,
+    redo_steps: Vec<(Step, usize)>,
     /// Sheet ids whose rows or columns moved since [`EditSession::take_moved`].
     moved: BTreeSet<u32>,
 }
@@ -188,7 +189,11 @@ impl EditSession {
     }
 
     fn done(&mut self, step: Step) {
-        self.undo_steps.push(step);
+        self.done_n(step, 1);
+    }
+
+    fn done_n(&mut self, step: Step, entries: usize) {
+        self.undo_steps.push((step, entries));
         self.redo_steps.clear();
         if let Step::Moved(id) = step {
             self.relayout(id);
@@ -296,6 +301,63 @@ impl EditSession {
         self.done(Step::Cells);
         self.watch(sheet, r, c, r, c);
         Ok(())
+    }
+
+    /// Replaces matches of `query` in the input of cells (formulas as text, like Excel)
+    /// and recalculates. `cells` are (sheet, cell); `None` means every filled cell of
+    /// `sheets`. One undo step. Returns how many cells changed.
+    pub fn replace(
+        &mut self,
+        sheets: &[usize],
+        cells: Option<&[(usize, CellPos)]>,
+        query: &Query,
+        with: &str,
+    ) -> Result<usize, String> {
+        let targets: Vec<(usize, CellPos)> = match cells {
+            Some(c) => c.to_vec(),
+            None => {
+                let model = self.model.get_model();
+                sheets
+                    .iter()
+                    .filter_map(|&s| model.workbook.worksheets.get(s).map(|ws| (s, ws)))
+                    .flat_map(|(s, ws)| {
+                        ws.sheet_data
+                            .cells()
+                            .map(move |(r, c, _)| (s, CellPos::new(r as u32 - 1, c as u32 - 1)))
+                    })
+                    .collect()
+            }
+        };
+        let changes: Vec<_> = targets
+            .into_iter()
+            .filter_map(|(s, p)| {
+                let new = query.replace(&self.content(s, p.row, p.col), with)?;
+                Some((s, p, new))
+            })
+            .collect();
+        if changes.is_empty() {
+            return Ok(0);
+        }
+        // One recalculation at the end instead of one per cell.
+        self.model.pause_evaluation();
+        let mut entries = 0;
+        let mut result = Ok(());
+        for (s, p, new) in &changes {
+            result = self
+                .model
+                .set_user_input(*s as u32, p.row as i32 + 1, p.col as i32 + 1, new);
+            if result.is_err() {
+                break;
+            }
+            entries += 1;
+            self.watch(*s, p.row, p.col, p.row, p.col);
+        }
+        self.model.resume_evaluation();
+        self.model.evaluate();
+        if entries > 0 {
+            self.done_n(Step::Cells, entries);
+        }
+        result.map(|()| entries)
     }
 
     /// Empties the selected cells, keeping their style.
@@ -438,27 +500,56 @@ impl EditSession {
 
     /// Undoes the last change; `false` when there is nothing to undo.
     pub fn undo(&mut self) -> bool {
-        if !(self.model.can_undo() && self.model.undo().is_ok()) {
-            return false;
-        }
-        if let Some(step) = self.undo_steps.pop() {
-            self.redo_steps.push(step);
-            if let Step::Moved(id) = step {
-                self.relayout(id);
-            }
-        }
-        true
+        self.step_back(true)
     }
 
     pub fn redo(&mut self) -> bool {
-        if !(self.model.can_redo() && self.model.redo().is_ok()) {
+        self.step_back(false)
+    }
+
+    /// Undoes (`undo`) or redoes the last step with all its model entries.
+    fn step_back(&mut self, undo: bool) -> bool {
+        let can = if undo {
+            self.model.can_undo()
+        } else {
+            self.model.can_redo()
+        };
+        if !can {
             return false;
         }
-        if let Some(step) = self.redo_steps.pop() {
-            self.undo_steps.push(step);
-            if let Step::Moved(id) = step {
-                self.relayout(id);
-            }
+        let from = if undo {
+            &mut self.undo_steps
+        } else {
+            &mut self.redo_steps
+        };
+        let (step, entries) = from.pop().unwrap_or((Step::Cells, 1));
+        if entries > 1 {
+            self.model.pause_evaluation();
+        }
+        let mut ok = true;
+        for _ in 0..entries {
+            let r = if undo {
+                self.model.undo()
+            } else {
+                self.model.redo()
+            };
+            ok &= r.is_ok();
+        }
+        if entries > 1 {
+            self.model.resume_evaluation();
+            self.model.evaluate();
+        }
+        if !ok {
+            return false;
+        }
+        let to = if undo {
+            &mut self.redo_steps
+        } else {
+            &mut self.undo_steps
+        };
+        to.push((step, entries));
+        if let Step::Moved(id) = step {
+            self.relayout(id);
         }
         true
     }
@@ -902,5 +993,53 @@ mod tests {
         assert!(!is_date_format("#,##0.00 \"€\""));
         assert!(!is_date_format("0.00%"));
         assert!(!is_date_format("[Red]0.00"));
+    }
+
+    #[test]
+    fn replace_all_changes_inputs_and_formulas_in_one_undo_step() {
+        let mut s = blank(Locale::Invariant);
+        s.set_input(0, 0, 0, "apple pie").unwrap();
+        s.set_input(0, 1, 0, "2").unwrap();
+        s.set_input(0, 2, 0, "=A2*10").unwrap();
+        s.set_input(0, 3, 0, "Apple").unwrap();
+        let n = s
+            .replace(&[0], None, &Query::text("apple"), "pear")
+            .unwrap();
+        assert_eq!(n, 2);
+        let u = s.updates(0);
+        assert_eq!(find(&u, 0, 0).value, CellValue::Text("pear pie".into()));
+        assert_eq!(find(&u, 3, 0).value, CellValue::Text("pear".into()));
+        // formulas are replaced as text and recalculated
+        let n = s.replace(&[0], None, &Query::text("A2"), "A2+1").unwrap();
+        assert_eq!(n, 1);
+        assert_eq!(s.content(0, 2, 0), "=A2+1*10");
+        assert_eq!(find(&s.updates(0), 2, 0).value, CellValue::Number(12.0));
+        // one cell only
+        let one = [(0, CellPos::new(0, 0))];
+        let pie = Query::text("pie");
+        assert_eq!(s.replace(&[0], Some(&one), &pie, "tart").unwrap(), 1);
+        assert_eq!(s.replace(&[0], Some(&one), &pie, "x").unwrap(), 0);
+
+        assert!(s.undo());
+        assert!(s.undo());
+        assert_eq!(s.content(0, 2, 0), "=A2*10");
+        assert!(s.undo()); // the first replace: both cells at once
+        let u = s.updates(0);
+        assert_eq!(find(&u, 0, 0).value, CellValue::Text("apple pie".into()));
+        assert_eq!(find(&u, 3, 0).value, CellValue::Text("Apple".into()));
+        assert_eq!(find(&u, 1, 0).value, CellValue::Number(2.0));
+        assert!(s.redo());
+        let u = s.updates(0);
+        assert_eq!(find(&u, 3, 0).value, CellValue::Text("pear".into()));
+    }
+
+    #[test]
+    fn typed_dates_become_date_values() {
+        for locale in [Locale::German, Locale::Invariant] {
+            let mut s = blank(locale);
+            s.set_input(0, 0, 0, &crate::today_input(locale)).unwrap();
+            let v = find(&s.updates(0), 0, 0).value.clone();
+            assert!(matches!(v, CellValue::DateTime(_)), "{locale:?}: {v:?}");
+        }
     }
 }

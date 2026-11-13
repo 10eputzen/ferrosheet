@@ -9,8 +9,8 @@ use std::sync::mpsc::{Receiver, TryRecvError};
 
 use eframe::egui::{self, Event, Key, Modifiers, ViewportCommand};
 use ferrosheet_core::{
-    CellPos, CellStyle, CopyFormat, EXTENSIONS, Lines, Loss, Query, Selection, Sheet, StyleChange,
-    TextFormat, cell_address, copy_text, find_all,
+    CellPos, CellStyle, CellValue, CopyFormat, EXTENSIONS, Lines, Loss, Query, Selection, Sheet,
+    StyleChange, Summary, TextFormat, copy_text, find_all, parse_reference, ref_text,
 };
 
 use editing::{After, Engine, Op};
@@ -48,6 +48,10 @@ enum Cmd {
     DeleteRows,
     DeleteCols,
     Find,
+    /// Find with the replace row.
+    Replace,
+    /// Focus the name box (Ctrl+G).
+    GoTo,
     Bold,
     Italic,
     Style(StyleChange),
@@ -69,6 +73,8 @@ struct SheetView {
     /// The loader has sent the formulas (the editing model is built from both).
     formulas_loaded: bool,
     grid: GridState,
+    /// Status bar figures of the selection they were computed for; cleared when cells change.
+    summary: Option<(Selection, Summary)>,
 }
 
 impl SheetView {
@@ -78,6 +84,20 @@ impl SheetView {
             formulas: HashMap::new(),
             formulas_loaded: false,
             grid: GridState::default(),
+            summary: None,
+        }
+    }
+
+    /// Sum, average and count of the selection, computed once per selection.
+    fn summary(&mut self) -> Summary {
+        let sel = self.grid.selection;
+        match self.summary {
+            Some((s, sum)) if s == sel => sum,
+            _ => {
+                let sum = self.sheet.summary(&sel);
+                self.summary = Some((sel, sum));
+                sum
+            }
         }
     }
 }
@@ -126,14 +146,41 @@ struct Search {
     focus: bool,
     query: String,
     all_sheets: bool,
+    /// Upper and lower case count.
+    case: bool,
     /// The query is a regular expression.
     regex: bool,
+    /// The replace row is shown.
+    replace_open: bool,
+    replace: String,
+    /// A single replace was applied: show the next hit once the search ran again.
+    after_replace: bool,
     /// Why the regular expression is invalid.
     error: Option<String>,
     /// Sorted by (sheet, row, col).
     hits: Vec<(usize, CellPos)>,
     current: Option<usize>,
     dirty: bool,
+}
+
+impl Search {
+    /// The query as typed, with the case and regex options.
+    fn query(&self) -> Result<Query, String> {
+        if self.regex {
+            Query::regex_case(&self.query, self.case)
+        } else {
+            Ok(Query::text_case(&self.query, self.case))
+        }
+    }
+
+    /// Sheets a search or replace covers.
+    fn sheets(&self, doc: &Doc) -> Vec<usize> {
+        if self.all_sheets {
+            (0..doc.names.len()).collect()
+        } else {
+            vec![doc.active]
+        }
+    }
 }
 
 enum ManualCheck {
@@ -184,6 +231,12 @@ pub struct App {
     confirm_delete: Option<usize>,
     /// Warning before overwriting an .xlsx: what would be lost, and what to do after saving.
     lossy: Option<(Vec<Loss>, Option<After>)>,
+    /// Text of the name box while it has the focus.
+    name_box: String,
+    /// Focus the name box next frame.
+    name_focus: bool,
+    /// Selection to show once the sheet Go to switched to has loaded.
+    goto: Option<Selection>,
 }
 
 impl App {
@@ -320,7 +373,10 @@ impl App {
                     // A big sheet arrives twice: first a preview of its top rows, then
                     // in full. Keep the view (selection, scroll, widths) when it grows.
                     match &mut doc.sheets[idx] {
-                        Some(v) => v.sheet = sheet,
+                        Some(v) => {
+                            v.sheet = sheet;
+                            v.summary = None;
+                        }
                         slot => *slot = Some(SheetView::new(sheet)),
                     }
                     // edits made while the full sheet was still loading
@@ -414,7 +470,14 @@ impl App {
             Cmd::Find => {
                 self.search.open = true;
                 self.search.focus = true;
+                self.search.replace_open = false;
             }
+            Cmd::Replace => {
+                self.search.open = true;
+                self.search.focus = true;
+                self.search.replace_open = true;
+            }
+            Cmd::GoTo => self.name_focus = true,
             Cmd::Bold => self.toggle(ctx, false),
             Cmd::Italic => self.toggle(ctx, true),
             Cmd::Style(c) => self.style(ctx, c),
@@ -481,16 +544,12 @@ impl App {
         if s.query.is_empty() {
             return;
         }
-        let query = if s.regex {
-            match Query::regex(&s.query) {
-                Ok(q) => q,
-                Err(e) => {
-                    s.error = Some(e);
-                    return;
-                }
+        let query = match s.query() {
+            Ok(q) => q,
+            Err(e) => {
+                s.error = Some(e);
+                return;
             }
-        } else {
-            Query::text(&s.query)
         };
         for (idx, view) in doc.sheets.iter().enumerate() {
             if !s.all_sheets && idx != doc.active {
@@ -539,6 +598,20 @@ impl App {
         }
     }
 
+    /// After a single replace: on to the next hit, past the cell just replaced.
+    fn next_after_replace(&mut self) {
+        let cursor = self.doc.as_ref().and_then(|d| {
+            let v = d.sheets.get(d.active)?.as_ref()?;
+            Some((d.active, v.grid.selection.cursor))
+        });
+        let here = self.search.current.map(|i| self.search.hits[i]);
+        if here.is_some() && here == cursor {
+            self.jump(1);
+        } else {
+            self.reveal_current();
+        }
+    }
+
     fn large_sheet(&self) -> bool {
         let Some(doc) = &self.doc else { return false };
         doc.sheets
@@ -573,6 +646,12 @@ impl App {
                 {
                     doc.request_missing();
                 }
+            }
+            if ui
+                .checkbox(&mut self.search.case, text::match_case())
+                .changed()
+            {
+                self.search.dirty = true;
             }
             if ui
                 .checkbox(&mut self.search.regex, text::regex())
@@ -629,6 +708,117 @@ impl App {
                 self.search.open = false;
             }
         });
+        if !self.search.replace_open {
+            return;
+        }
+        let (mut one, mut all) = (false, false);
+        ui.horizontal(|ui| {
+            let label = ui.label(text::replace_with());
+            let field = ui
+                .add(egui::TextEdit::singleline(&mut self.search.replace).desired_width(240.0))
+                .labelled_by(label.id);
+            one = field.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter));
+            one |= ui
+                .button(text::replace())
+                .on_hover_text(text::replace_hint())
+                .clicked();
+            all = ui
+                .button(text::replace_all())
+                .on_hover_text(text::replace_hint())
+                .clicked();
+        });
+        let ctx = ui.ctx().clone();
+        if all {
+            self.replace_all(&ctx);
+        } else if one {
+            self.replace_one(&ctx);
+        }
+    }
+
+    /// "Replace all": every match in the searched sheets, one undo step.
+    fn replace_all(&mut self, ctx: &egui::Context) {
+        let Some(doc) = &self.doc else { return };
+        let Ok(query) = self.search.query() else {
+            return;
+        };
+        if self.search.query.is_empty() {
+            return;
+        }
+        let sheets = self.search.sheets(doc);
+        let with = self.search.replace.clone();
+        self.queue(
+            ctx,
+            Op::Replace {
+                sheets,
+                cell: None,
+                query,
+                with,
+            },
+        );
+    }
+
+    /// "Replace": the current match, then on to the next one. Without a current match
+    /// it only finds one, like Excel.
+    fn replace_one(&mut self, ctx: &egui::Context) {
+        if self.search.dirty {
+            self.run_search();
+            self.reveal_current();
+            return;
+        }
+        let Some(hit) = self.search.current.map(|i| self.search.hits[i]) else {
+            return;
+        };
+        let Ok(query) = self.search.query() else {
+            return;
+        };
+        let with = self.search.replace.clone();
+        self.queue(
+            ctx,
+            Op::Replace {
+                sheets: vec![hit.0],
+                cell: Some(hit),
+                query,
+                with,
+            },
+        );
+    }
+
+    /// Jumps to and selects what the name box holds; says why when it cannot.
+    fn go_to(&mut self, input: &str) {
+        let Some((sheet, first, last)) = parse_reference(input) else {
+            self.status = Some((text::invalid_reference().into(), f64::NAN));
+            return;
+        };
+        if let Some(name) = sheet {
+            let idx = self.doc.as_ref().and_then(|d| {
+                d.names
+                    .iter()
+                    .position(|n| n.to_lowercase() == name.to_lowercase())
+            });
+            match idx {
+                Some(i) => self.switch_sheet(i),
+                None => {
+                    self.status = Some((text::unknown_sheet(&name), f64::NAN));
+                    return;
+                }
+            }
+        }
+        // The active cell is the top left one, as in Excel.
+        self.goto = Some(Selection {
+            anchor: last,
+            cursor: first,
+        });
+        self.apply_goto();
+    }
+
+    /// Shows a Go to selection once its sheet is there.
+    fn apply_goto(&mut self) {
+        let Some(sel) = self.goto else { return };
+        if let Some(v) = self.active_view() {
+            v.grid.selection = sel;
+            v.grid.scroll_to = Some(sel.cursor);
+            self.goto = None;
+        }
     }
 
     // ---- keyboard ----------------------------------------------------------
@@ -658,6 +848,13 @@ impl App {
         });
         let editing = ctx.memory(|m| m.focused().is_some());
         let modal = self.confirm.is_some() || self.error.is_some() || self.lossy.is_some();
+        // Alt+= and Ctrl+; may come with the character too; it must not start editing.
+        if actions
+            .iter()
+            .any(|&(k, m)| is_autosum(k, m) || is_today(k, m))
+        {
+            typed.clear();
+        }
         // Typing on a cell starts editing it with what was typed.
         if !editing && !modal && !typed.is_empty() && !self.editing_cell() {
             self.start_edit(Some(typed));
@@ -681,6 +878,12 @@ impl App {
                     self.search.open = true;
                     self.search.focus = true;
                 }
+                Key::H if ctrl => self.run(ctx, Cmd::Replace),
+                Key::G if ctrl && !cell => self.name_focus = true,
+                Key::F5 if !cell => self.name_focus = true,
+                _ if is_today(key, m) && cell => self.insert_in_editor(ctx, &today_input()),
+                _ if is_today(key, m) && !editing => self.start_edit(Some(today_input())),
+                _ if is_autosum(key, m) && !editing && !cell => self.autosum(),
                 Key::F3 => self.jump(if m.shift { -1 } else { 1 }),
                 Key::Escape if self.search.open => self.search.open = false,
                 Key::PageUp | Key::PageDown if ctrl => {
@@ -800,6 +1003,15 @@ impl App {
                 col_items(ui, &mut cmd, view);
                 ui.separator();
                 item(ui, &mut cmd, text::find(), "Ctrl+F", doc, Cmd::Find);
+                item(
+                    ui,
+                    &mut cmd,
+                    text::replace_menu(),
+                    "Ctrl+H",
+                    doc,
+                    Cmd::Replace,
+                );
+                item(ui, &mut cmd, text::go_to(), "Ctrl+G", view, Cmd::GoTo);
             });
             ui.menu_button(text::menu_view(), |ui| {
                 let (up, down) = (self.zoom_step(true), self.zoom_step(false));
@@ -836,14 +1048,44 @@ impl App {
         let mut cmd = None;
         let mut start_in_bar = false;
         let mut leave_bar = false;
+        let mut name_box = std::mem::take(&mut self.name_box);
+        let name_focus = std::mem::take(&mut self.name_focus);
+        let mut go_to = None;
         egui::Panel::top("top").show(ui, |ui| {
             cmd = self.menu_bar(ui);
             self.format_bar(ui);
             if let Some(v) = self.active_view() {
                 ui.horizontal(|ui| {
                     let cur = v.grid.selection.cursor;
-                    let name = egui::RichText::new(cell_address(cur.row, cur.col)).monospace();
-                    let address = ui.add_sized([56.0, 20.0], egui::Label::new(name));
+                    let address = ref_text(cur, cur);
+                    // Name box: shows the selection, takes a cell or range to go to.
+                    let id = egui::Id::unique("ferrosheet_name_box");
+                    if !name_focus && !ui.memory(|m| m.has_focus(id)) {
+                        name_box = ref_text(v.grid.selection.anchor, cur);
+                    }
+                    let resp = ui
+                        .add(
+                            egui::TextEdit::singleline(&mut name_box)
+                                .id(id)
+                                .font(egui::TextStyle::Monospace)
+                                .desired_width(80.0),
+                        )
+                        .accessible_name(text::name_box())
+                        .on_hover_text(text::name_box_hint());
+                    if name_focus {
+                        resp.request_focus();
+                        let mut state =
+                            egui::text_edit::TextEditState::load(ui.ctx(), id).unwrap_or_default();
+                        let all = egui::text::CCursorRange::two(
+                            egui::text::CCursor::new(0),
+                            egui::text::CCursor::new(name_box.chars().count()),
+                        );
+                        state.cursor.set_char_range(Some(all));
+                        state.store(ui.ctx(), id);
+                    }
+                    if resp.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) {
+                        go_to = Some(name_box.clone());
+                    }
                     ui.weak(text::formula_label());
                     let font = egui::TextStyle::Body.resolve(ui.style());
                     let mut layouter = grid::formula_layouter(font);
@@ -865,7 +1107,7 @@ impl App {
                         .id(grid::bar_id())
                         .desired_width(f32::INFINITY)
                         .layouter(&mut layouter);
-                    let resp = ui.add(bar).labelled_by(address.id);
+                    let resp = ui.add(bar).accessible_name(&address);
                     match &mut v.grid.edit {
                         // A click on a cell while pointing takes the focus only briefly.
                         Some(e) => {
@@ -888,6 +1130,10 @@ impl App {
             }
             ui.add_space(2.0);
         });
+        self.name_box = name_box;
+        if let Some(input) = go_to {
+            self.go_to(&input);
+        }
         let ctx = ui.ctx().clone();
         if start_in_bar {
             self.start_edit(None);
@@ -1046,7 +1292,7 @@ impl App {
                                 if v.grid.edit.is_some() {
                                     ui.label(text::editing_hint());
                                 } else if n > 1 {
-                                    ui.weak(text::selected(n));
+                                    ui.label(summary_text(v.summary(), n));
                                 }
                             }
                         }
@@ -1308,9 +1554,14 @@ impl eframe::App for App {
             self.request_open(&ctx, p);
         }
         self.keyboard(&ctx);
-        if self.search.dirty && self.search.open && !self.large_sheet() {
+        let after_replace = std::mem::take(&mut self.search.after_replace);
+        if self.search.dirty && self.search.open && (!self.large_sheet() || after_replace) {
             self.run_search();
+            if after_replace {
+                self.next_after_replace();
+            }
         }
+        self.apply_goto();
 
         let mut cmd = self.top_bar(ui);
         if let Some(c) = self.bottom_bar(ui) {
@@ -1515,6 +1766,39 @@ fn screenshot(ctx: &egui::Context) {
             .expect("save screenshot");
         ctx2.send_viewport_cmd(egui::ViewportCommand::Close);
     });
+}
+
+/// Alt+= (on German keyboards Alt+Shift+0): AutoSum.
+fn is_autosum(key: Key, m: Modifiers) -> bool {
+    m.alt && !m.command && (key == Key::Equals || (key == Key::Num0 && m.shift))
+}
+
+/// Ctrl+; (on German keyboards also Ctrl+.): today's date.
+fn is_today(key: Key, m: Modifiers) -> bool {
+    m.command && !m.alt && matches!(key, Key::Semicolon | Key::Period)
+}
+
+fn today_input() -> String {
+    ferrosheet_core::today_input(text::locale())
+}
+
+/// Shown numbers keep at most ten decimals, so an average reads like Excel's.
+fn short_number(n: f64) -> String {
+    let n = if n.abs() < 1e15 {
+        (n * 1e10).round() / 1e10
+    } else {
+        n
+    };
+    CellValue::Number(n).format(text::locale())
+}
+
+/// Average, count and sum of a selection of `cells` cells for the status bar.
+fn summary_text(sum: Summary, cells: u64) -> String {
+    match (sum.count, sum.average()) {
+        (0, _) => text::selected(cells),
+        (n, Some(avg)) => text::summary(n, Some((&short_number(avg), &short_number(sum.sum)))),
+        (n, None) => text::summary(n, None),
+    }
 }
 
 /// A small `+`/`−` zoom button, named for screen readers by what it does.
@@ -2386,5 +2670,182 @@ mod tests {
         click_cell(&mut h, 1, 1);
         assert!(h.state_mut().active_view().unwrap().grid.edit.is_none());
         assert_eq!(cursor(&mut h), CellPos::new(1, 1));
+    }
+
+    fn status(h: &Harness<'_, App>) -> Option<String> {
+        h.state().status.as_ref().map(|(s, _)| s.clone())
+    }
+
+    fn selection(h: &mut Harness<'_, App>) -> Selection {
+        h.state_mut().active_view().unwrap().grid.selection
+    }
+
+    #[test]
+    fn the_status_bar_sums_averages_and_counts_the_selection() {
+        let mut h = open(demo());
+        // B2:C3: four numbers
+        h.state_mut().active_view().unwrap().grid.selection = Selection {
+            anchor: CellPos::new(1, 1),
+            cursor: CellPos::new(2, 2),
+        };
+        h.run();
+        let sum = [(1, 1), (1, 2), (2, 1), (2, 2)]
+            .map(|(r, c)| number(&mut h, r, c))
+            .iter()
+            .sum::<f64>();
+        let label = text::summary(
+            4,
+            Some((&super::short_number(sum / 4.0), &super::short_number(sum))),
+        );
+        h.get_by_label(&label);
+
+        // A1:A2: text only, so just the count
+        h.state_mut().active_view().unwrap().grid.selection = Selection {
+            anchor: CellPos::new(0, 0),
+            cursor: CellPos::new(1, 0),
+        };
+        h.run();
+        h.get_by_label(&text::summary(2, None));
+    }
+
+    #[test]
+    fn ctrl_h_replaces_all_matches_in_one_undo_step() {
+        let mut h = open(demo());
+        h.key_press_modifiers(Modifiers::COMMAND, Key::H);
+        h.run();
+        assert!(h.state().search.open && h.state().search.replace_open);
+        h.event(Event::Text("screws".into()));
+        h.run();
+        h.get_by_label(text::replace_with()).click();
+        h.run();
+        h.event(Event::Text("Bolts".into()));
+        h.run();
+        h.get_by_label(text::replace_all()).click();
+        settle(&mut h, |app| {
+            app.active_view().unwrap().sheet.value(1, 0) == &CellValue::Text("Bolts M4".into())
+        });
+        let n = h.state().search.hits.len().max(1);
+        assert_eq!(status(&h), Some(text::replaced(n)));
+        assert!(h.state().search.hits.is_empty(), "nothing left to find");
+
+        run(&mut h, Cmd::Undo);
+        settle(&mut h, |app| {
+            app.active_view().unwrap().sheet.value(1, 0) == &CellValue::Text("Screws M4".into())
+        });
+    }
+
+    #[test]
+    fn replace_changes_the_current_match_only() {
+        let mut h = open(demo());
+        run(&mut h, Cmd::Replace);
+        h.run();
+        h.event(Event::Text("power".into()));
+        h.run();
+        assert_eq!(cursor(&mut h), CellPos::new(3, 0));
+        let before = value(&mut h, 3, 0);
+        h.state_mut().search.replace = "Juice".into();
+        h.get_by_label(text::replace()).click();
+        settle(&mut h, |app| {
+            app.active_view().unwrap().sheet.value(3, 0) != &before
+        });
+        let CellValue::Text(now) = value(&mut h, 3, 0) else {
+            panic!("A4 is text")
+        };
+        assert!(now.contains("Juice"), "{now}");
+        assert_eq!(status(&h), Some(text::replaced(1)));
+        assert!(h.state().search.hits.is_empty());
+    }
+
+    /// Ctrl+G, then `input` and Enter in the name box.
+    fn go_to(h: &mut Harness<'_, App>, input: &str) {
+        h.key_press_modifiers(Modifiers::COMMAND, Key::G);
+        h.run();
+        h.event(Event::Text(input.into()));
+        h.run();
+        h.key_press(Key::Enter);
+        // scrolling to the cell animates for a few frames
+        settle(h, |_| true);
+    }
+
+    #[test]
+    fn the_name_box_shows_the_selection_and_goes_to_what_is_typed() {
+        let mut h = open(demo());
+        h.get_by_role_and_label(Role::TextInput, text::name_box());
+        h.key_press_modifiers(Modifiers::COMMAND, Key::G);
+        h.run();
+        assert!(h.ctx.memory(|m| m.focused().is_some()), "Ctrl+G focuses it");
+        h.key_press(Key::Escape);
+        h.run();
+
+        go_to(&mut h, "B200");
+        assert_eq!(selection(&mut h), Selection::single(CellPos::new(199, 1)));
+
+        go_to(&mut h, "c10:a1");
+        let sel = selection(&mut h);
+        assert_eq!(sel.bounds(), (CellPos::new(0, 0), CellPos::new(9, 2)));
+        assert_eq!(sel.cursor, CellPos::new(0, 0));
+        assert_eq!(h.state().name_box, "A1:C10");
+
+        go_to(&mut h, "nonsense");
+        assert_eq!(status(&h).as_deref(), Some(text::invalid_reference()));
+        go_to(&mut h, "Nowhere!A1");
+        assert_eq!(status(&h), Some(text::unknown_sheet("Nowhere")));
+
+        go_to(&mut h, "summary!B3");
+        settle(&mut h, |app| {
+            app.doc.as_ref().is_some_and(|d| d.active == 1) && app.active_view().is_some()
+        });
+        h.run();
+        assert_eq!(cursor(&mut h), CellPos::new(2, 1));
+    }
+
+    #[test]
+    fn alt_equals_sums_the_numbers_above_and_a_click_changes_the_range() {
+        let mut h = open(demo());
+        let d = (1..=4).map(|r| number(&mut h, r, 3)).sum::<f64>();
+        select(&mut h, 5, 3); // D6, under D2:D5
+        h.key_press_modifiers(Modifiers::ALT, Key::Equals);
+        h.run();
+        assert_eq!(edit_text(&mut h).as_deref(), Some("=SUM(D2:D5)"));
+        h.key_press(Key::Enter);
+        settle(&mut h, |app| {
+            matches!(
+                app.active_view().unwrap().sheet.value(5, 3),
+                CellValue::Number(_)
+            )
+        });
+        assert!((number(&mut h, 5, 3) - d).abs() < 1e-9);
+
+        // the toolbar button; a click on a cell replaces the suggested range
+        let b2 = number(&mut h, 1, 1);
+        select(&mut h, 5, 1);
+        h.get_by_label(text::autosum()).click();
+        h.run();
+        assert_eq!(edit_text(&mut h).as_deref(), Some("=SUM(B2:B5)"));
+        click_cell(&mut h, 1, 1);
+        assert_eq!(edit_text(&mut h).as_deref(), Some("=SUM(B2)"));
+        h.key_press(Key::Enter);
+        settle(&mut h, |app| {
+            app.active_view().unwrap().sheet.value(5, 1) == &CellValue::Number(b2)
+        });
+    }
+
+    #[test]
+    fn ctrl_semicolon_enters_todays_date() {
+        let mut h = open(demo());
+        select(&mut h, 11, 0);
+        h.key_press_modifiers(Modifiers::COMMAND, Key::Semicolon);
+        h.run();
+        assert_eq!(
+            edit_text(&mut h),
+            Some(ferrosheet_core::today_input(text::locale()))
+        );
+        h.key_press(Key::Enter);
+        settle(&mut h, |app| {
+            matches!(
+                app.active_view().unwrap().sheet.value(11, 0),
+                CellValue::DateTime(_)
+            )
+        });
     }
 }

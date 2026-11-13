@@ -74,6 +74,8 @@ pub struct CellEdit {
     pub point: Option<(usize, usize)>,
     /// A click or drag on cells is writing a reference (point mode); where it started.
     pub pointing: Option<CellPos>,
+    /// Where the text cursor goes when the editor takes the focus (default: the end).
+    pub cursor: Option<usize>,
 }
 
 impl CellEdit {
@@ -86,6 +88,7 @@ impl CellEdit {
             in_bar: false,
             point: None,
             pointing: None,
+            cursor: None,
         }
     }
 
@@ -307,11 +310,17 @@ pub fn show(
     let row_hdr_w = (digits(sheet.rows.max(1000)) as f32 * 8.0 * zoom + 2.0 * PAD).max(40.0);
     let body = Rect::from_min_max(full.min + vec2(row_hdr_w, header_h), full.max);
 
-    // Virtual grid fills the window even for small sheets, like a real spreadsheet.
+    // Virtual grid fills the window even for small sheets, like a real spreadsheet,
+    // and reaches as far as the selection (Go to may select beyond the used range).
+    let (_, sel_end) = st.selection.bounds();
     let rows = sheet
         .rows
-        .max((body.height() / st.row_heights.base()) as u32 + 1);
-    let cols = sheet.cols.max((body.width() / default_w) as u32 + 1);
+        .max((body.height() / st.row_heights.base()) as u32 + 1)
+        .max(sel_end.row.saturating_add(1));
+    let cols = sheet
+        .cols
+        .max((body.width() / default_w) as u32 + 1)
+        .max(sel_end.col.saturating_add(1));
     if st.col_widths.len() < cols as usize {
         st.col_widths.resize(cols as usize, default_w);
     }
@@ -538,7 +547,8 @@ pub fn show(
                         edit.request_focus();
                         let mut state = egui::text_edit::TextEditState::load(ui.ctx(), edit_id())
                             .unwrap_or_default();
-                        let end = egui::text::CCursor::new(e.text.chars().count());
+                        let at = e.cursor.take().unwrap_or(e.text.chars().count());
+                        let end = egui::text::CCursor::new(at);
                         state
                             .cursor
                             .set_char_range(Some(egui::text::CCursorRange::one(end)));

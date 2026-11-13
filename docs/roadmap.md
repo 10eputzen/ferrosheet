@@ -65,7 +65,10 @@ the start screen.
 Done in 0.5: paste tab-separated text (Ctrl+V, one undo step, a single value fills the
 selection), insert and delete rows and columns with formulas following, and a warning before
 overwriting an `.xlsx` whose content would be lost (see below).
-Still open: replace, printing/PDF. See [feature parity](feature-parity.md).
+Done in 0.6: Find & Replace (Ctrl+H, one undo step for "Replace all", also inside
+formulas), a name box to go to a cell or range (Ctrl+G, F5), sum/average/count of the
+selection in the status bar, AutoSum (Σ, Alt+=) and today's date (Ctrl+;).
+Still open: printing/PDF, named ranges in the name box. See [feature parity](feature-parity.md).
 
 ### Saving an xlsx without losses
 

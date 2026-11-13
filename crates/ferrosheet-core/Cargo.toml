@@ -9,7 +9,7 @@ authors.workspace = true
 
 [dependencies]
 calamine = { version = "0.38", features = ["dates"] }
-chrono = { version = "0.4", default-features = false, features = ["std"] }
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 csv = "1"
 regex = "1"
 # Formula engine for editing; only used once the user edits a cell.

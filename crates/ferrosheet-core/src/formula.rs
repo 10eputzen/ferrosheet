@@ -35,7 +35,10 @@ fn cell_at(cs: &[char], mut i: usize) -> Option<(CellPos, usize)> {
     let mut col = 0u32;
     let start = i;
     while let Some(c) = cs.get(i).filter(|c| c.is_ascii_alphabetic()) {
-        col = col * 26 + (c.to_ascii_uppercase() as u32 - 'A' as u32 + 1);
+        // saturating: a long word is no column, but must not overflow
+        col = col
+            .saturating_mul(26)
+            .saturating_add(c.to_ascii_uppercase() as u32 - 'A' as u32 + 1);
         i += 1;
     }
     if i == start || i - start > 3 || col > MAX_COL {
@@ -206,6 +209,24 @@ pub fn ref_slot(
     accepts_ref(formula, sel.0).then_some(sel)
 }
 
+/// A cell or range typed into the name box, such as `B200`, `a1:c10`, `$A$1` or
+/// `'My sheet'!A1`: the sheet named in front (if any), top-left and bottom-right cell.
+/// `None` when the text is anything else.
+pub fn parse_reference(input: &str) -> Option<(Option<String>, CellPos, CellPos)> {
+    let input = input.trim();
+    if input.is_empty() {
+        return None;
+    }
+    let formula = format!("={input}");
+    let refs = find_refs(&formula);
+    match refs.as_slice() {
+        [r] if r.start == 1 && r.end == formula.chars().count() => {
+            Some((r.sheet.clone(), r.first, r.last))
+        }
+        _ => None,
+    }
+}
+
 /// `A1` for one cell, `A1:B5` for a range (any two corners).
 pub fn ref_text(a: CellPos, b: CellPos) -> String {
     let (tl, br) = (
@@ -334,5 +355,25 @@ mod tests {
         let mut t = "=ä+".to_string();
         splice(&mut t, 3, 3, "A1");
         assert_eq!(t, "=ä+A1");
+    }
+
+    #[test]
+    fn name_box_input_is_a_cell_or_range() {
+        assert_eq!(parse_reference("B200"), Some((None, p(199, 1), p(199, 1))));
+        assert_eq!(parse_reference(" c10:a1 "), Some((None, p(0, 0), p(9, 2))));
+        assert_eq!(parse_reference("$A$1"), Some((None, p(0, 0), p(0, 0))));
+        assert_eq!(
+            parse_reference("Sheet2!A1"),
+            Some((Some("Sheet2".into()), p(0, 0), p(0, 0)))
+        );
+        assert_eq!(
+            parse_reference("'My sheet'!B2:B3"),
+            Some((Some("My sheet".into()), p(1, 1), p(2, 1)))
+        );
+        for bad in [
+            "", "hello", "nonsense", "A0", "A1+B2", "SUM(A1)", "A1:", "ZZZZ1",
+        ] {
+            assert_eq!(parse_reference(bad), None, "{bad}");
+        }
     }
 }

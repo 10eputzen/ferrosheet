@@ -34,13 +34,14 @@ Spreadsheet functions (SUM, VLOOKUP, …) have their own list: [function parity]
 | Light and dark mode | ✅ | ✅ |
 | Interface language | many | German, English |
 | **Finding and selecting** | | |
-| Search, case-insensitive, current or all sheets | ✅ | ✅ |
+| Search, current or all sheets, match case | ✅ | ✅ |
 | Search with regex | ✅ | ✅ toggle next to "All sheets", invalid pattern shows a hint |
-| Replace | ✅ | 🟡 phase 2 |
-| Go to cell or named range | ✅ | ❌ |
+| Replace | ✅ | ✅ Ctrl+H or *Edit → Replace…*: one match or all at once (one undo step, says how many cells), also inside formulas; regex groups with `$1` |
+| Name box, go to a cell or range (`B200`, `Sheet2!A1`, `A1:C10`) | ✅ | ✅ Ctrl+G or F5; named ranges ❌ |
 | Select cells, rows, columns, all | ✅ | ✅ |
 | Copy as tab-separated text (pastes into Excel, Sheets, mail) | ✅ | ✅ plus raw values with Ctrl+Shift+C |
 | Sort and filter | ✅ | ❌ (maybe later, view-only) |
+| Sum, average and count of the selection in the status bar | ✅ | ✅ |
 | **Editing** | | |
 | Edit cells | ✅ | ✅ |
 | Undo, redo | ✅ | ✅ |
@@ -50,6 +51,7 @@ Spreadsheet functions (SUM, VLOOKUP, …) have their own list: [function parity]
 | Format cells: fonts, borders, alignment, styles | ✅ | ❌ |
 | Merge cells | ✅ | ❌ |
 | Autofill (drag a series) | ✅ | ❌ |
+| AutoSum (Σ, Alt+=), today's date (Ctrl+;) | ✅ | ✅ the range can be changed by clicking cells before Enter; on German keyboards also Ctrl+. |
 | Data validation, drop-down lists | ✅ | ❌ |
 | Cell and sheet protection | ✅ | ❌ |
 | **Formulas and analysis** | | |

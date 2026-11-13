@@ -140,6 +140,22 @@ texts! {
     save_copy: "Als Kopie speichern …", "Save as copy …";
     save_anyway: "Trotzdem speichern", "Save anyway";
     find: "Suchen …", "Find …";
+    replace_menu: "Ersetzen …", "Replace …";
+    go_to: "Gehe zu …", "Go to …";
+    match_case: "Groß/klein beachten", "Match case";
+    replace_with: "Ersetzen durch", "Replace with";
+    replace: "Ersetzen", "Replace";
+    replace_all: "Alle ersetzen", "Replace all";
+    replace_hint: "Ersetzt im Zellinhalt, auch in Formeln. Strg+Z macht es rückgängig.",
+        "Replaces in the cell contents, formulas included. Ctrl+Z undoes it.";
+    name_box: "Namenfeld", "Name box";
+    name_box_hint: "Zelle oder Bereich eingeben und Enter drücken, z. B. B200, Tabelle2!A1 oder A1:C10 (Strg+G)",
+        "Type a cell or range and press Enter, e.g. B200, Sheet2!A1 or A1:C10 (Ctrl+G)";
+    invalid_reference: "Kein gültiger Bezug – z. B. B200, Tabelle2!A1 oder A1:C10",
+        "Not a cell or range – try B200, Sheet2!A1 or A1:C10";
+    autosum: "Σ", "Σ";
+    autosum_hint: "AutoSumme (Alt+=): summiert die Zahlen darüber oder links davon",
+        "AutoSum (Alt+=): adds up the numbers above or to the left";
     bold_name: "Fett", "Bold";
     italic_name: "Kursiv", "Italic";
     zoom_in: "Vergrößern", "Zoom in";
@@ -281,6 +297,35 @@ pub fn copied(cells: u64) -> String {
         (Lang::De, n) => format!("{n} Zellen kopiert"),
         (Lang::En, 1) => "1 cell copied".into(),
         (Lang::En, n) => format!("{n} cells copied"),
+    }
+}
+
+pub fn replaced(cells: usize) -> String {
+    match (lang(), cells) {
+        (Lang::De, 1) => "1 Zelle ersetzt".into(),
+        (Lang::De, n) => format!("{n} Zellen ersetzt"),
+        (Lang::En, 1) => "1 cell replaced".into(),
+        (Lang::En, n) => format!("{n} cells replaced"),
+    }
+}
+
+pub fn unknown_sheet(name: &str) -> String {
+    match lang() {
+        Lang::De => format!("Kein Blatt „{name}“"),
+        Lang::En => format!("No sheet \"{name}\""),
+    }
+}
+
+/// Status bar for a selection: average, count and sum like Excel; only the count
+/// when there are no numbers (`numbers` = average and sum, already formatted).
+pub fn summary(count: u64, numbers: Option<(&str, &str)>) -> String {
+    match (lang(), numbers) {
+        (Lang::De, Some((avg, sum))) => {
+            format!("Mittelwert: {avg}    Anzahl: {count}    Summe: {sum}")
+        }
+        (Lang::De, None) => format!("Anzahl: {count}"),
+        (Lang::En, Some((avg, sum))) => format!("Average: {avg}    Count: {count}    Sum: {sum}"),
+        (Lang::En, None) => format!("Count: {count}"),
     }
 }
 

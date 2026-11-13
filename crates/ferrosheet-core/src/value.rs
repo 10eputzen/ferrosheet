@@ -41,6 +41,16 @@ pub enum Locale {
     Invariant,
 }
 
+/// Today's date as it is typed in `locale` (`13.11.2026` or `2026-11-13`); the editor
+/// turns it into a date value.
+pub fn today_input(locale: Locale) -> String {
+    let today = chrono::Local::now().date_naive();
+    match locale {
+        Locale::German => today.format("%d.%m.%Y").to_string(),
+        Locale::Invariant => today.format("%Y-%m-%d").to_string(),
+    }
+}
+
 impl CellValue {
     /// Renders the value as text in the given format.
     pub fn format(&self, f: Locale) -> String {

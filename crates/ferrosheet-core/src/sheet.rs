@@ -5,7 +5,7 @@ use std::borrow::Cow;
 use std::collections::HashMap;
 use std::sync::OnceLock;
 
-use crate::{CellValue, Locale};
+use crate::{CellPos, CellValue, Locale, Selection};
 
 /// Look of a cell beyond its value. Only cells that were edited carry one.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -16,6 +16,23 @@ pub struct CellStyle {
     pub color: Option<[u8; 3]>,
     /// Background, `None` = no fill.
     pub fill: Option<[u8; 3]>,
+}
+
+/// Sum, average and count of a selection, as Excel shows them in the status bar.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Summary {
+    /// Cells that are not empty.
+    pub count: u64,
+    /// Cells holding a number (dates and durations count as numbers).
+    pub numbers: u64,
+    pub sum: f64,
+}
+
+impl Summary {
+    /// Average of the numbers, `None` without any.
+    pub fn average(&self) -> Option<f64> {
+        (self.numbers > 0).then(|| self.sum / self.numbers as f64)
+    }
 }
 
 /// A worksheet ready for display. Cell `(0, 0)` is `A1`.
@@ -137,6 +154,55 @@ impl Sheet {
         self.cols = cols;
     }
 
+    /// Sum, average and count of the selected cells; only the used range is visited,
+    /// so a whole selected column costs as much as its filled rows.
+    pub fn summary(&self, sel: &Selection) -> Summary {
+        let mut out = Summary::default();
+        let (tl, br) = sel.bounds();
+        if self.rows == 0 || self.cols == 0 || tl.row >= self.rows || tl.col >= self.cols {
+            return out;
+        }
+        let (last_row, last_col) = (br.row.min(self.rows - 1), br.col.min(self.cols - 1));
+        let cols = self.cols as usize;
+        for r in tl.row..=last_row {
+            let start = r as usize * cols;
+            let row = &self.cells[start + tl.col as usize..=start + last_col as usize];
+            for v in row {
+                match v {
+                    CellValue::Empty => {}
+                    CellValue::Number(n) | CellValue::DateTime(n) | CellValue::Duration(n) => {
+                        out.count += 1;
+                        out.numbers += 1;
+                        out.sum += n;
+                    }
+                    _ => out.count += 1,
+                }
+            }
+        }
+        out
+    }
+
+    /// The cells AutoSum adds up for a formula at `at`: the unbroken run of numbers right
+    /// above it, or, with none above, right left of it (like Excel). `None` without any.
+    pub fn autosum_range(&self, at: CellPos) -> Option<(CellPos, CellPos)> {
+        let num = |r: u32, c: u32| self.value(r, c).is_numeric();
+        if at.row > 0 && num(at.row - 1, at.col) {
+            let mut top = at.row - 1;
+            while top > 0 && num(top - 1, at.col) {
+                top -= 1;
+            }
+            return Some((CellPos::new(top, at.col), CellPos::new(at.row - 1, at.col)));
+        }
+        if at.col > 0 && num(at.row, at.col - 1) {
+            let mut left = at.col - 1;
+            while left > 0 && num(at.row, left - 1) {
+                left -= 1;
+            }
+            return Some((CellPos::new(at.row, left), CellPos::new(at.row, at.col - 1)));
+        }
+        None
+    }
+
     /// Builds the search index now (e.g. on a background thread right after loading),
     /// so the first search is as fast as every later one.
     pub fn prepare_search(&self) {
@@ -212,5 +278,66 @@ mod tests {
         s.set(0, 0, Number(3.0), None, CellStyle::default());
         assert_eq!(s.display(0, 0), "3");
         assert_eq!(s.style(0, 0), CellStyle::default());
+    }
+
+    #[test]
+    fn summary_counts_filled_cells_and_adds_the_numbers() {
+        let s = Sheet::from_cells(
+            "t".into(),
+            3,
+            2,
+            vec![
+                Text("a".into()),
+                Number(1.5),
+                Empty,
+                Number(2.5),
+                Bool(true),
+                Empty,
+            ],
+            Locale::Invariant,
+        );
+        let all = Selection {
+            anchor: crate::CellPos::new(0, 0),
+            // far beyond the used range, like a whole selected column
+            cursor: crate::CellPos::new(1_048_575, 5),
+        };
+        let sum = s.summary(&all);
+        assert_eq!((sum.count, sum.numbers, sum.sum), (4, 2, 4.0));
+        assert_eq!(sum.average(), Some(2.0));
+        let text = Selection::single(crate::CellPos::new(0, 0));
+        assert_eq!(s.summary(&text).average(), None);
+        let outside = Selection::single(crate::CellPos::new(9, 9));
+        assert_eq!(s.summary(&outside), Summary::default());
+    }
+
+    #[test]
+    fn autosum_takes_the_numbers_above_or_else_left() {
+        // A: header, 1, 2, (empty) / B: 5 / C: target
+        let s = Sheet::from_cells(
+            "t".into(),
+            4,
+            3,
+            vec![
+                Text("h".into()),
+                Empty,
+                Empty,
+                Number(1.0),
+                Empty,
+                Empty,
+                Number(2.0),
+                Number(5.0),
+                Number(6.0),
+                Empty,
+                Empty,
+                Empty,
+            ],
+            Locale::Invariant,
+        );
+        let p = CellPos::new;
+        assert_eq!(s.autosum_range(p(3, 0)), Some((p(1, 0), p(2, 0))));
+        // nothing above C3 but numbers to its left
+        assert_eq!(s.autosum_range(p(2, 2)), Some((p(2, 0), p(2, 1))));
+        assert_eq!(s.autosum_range(p(0, 0)), None);
+        assert_eq!(s.autosum_range(p(0, 2)), None);
     }
 }
