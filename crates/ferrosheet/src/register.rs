@@ -125,7 +125,60 @@ fn notify_shell() {
     };
 }
 
-pub fn register() -> io::Result<()> {
+/// The exe the "open" command of an existing registration points at, if any.
+fn registered_exe(command: &str) -> Option<&Path> {
+    let rest = command.strip_prefix('"')?;
+    Some(Path::new(&rest[..rest.find('"')?]))
+}
+
+/// Re-registers silently when ferrosheet was registered from a place that no longer has
+/// the exe (moved or unzipped elsewhere). Does nothing for other copies next to a working one,
+/// so a second copy does not take the association over.
+pub fn refresh_if_moved() {
+    let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+    let Ok(key) = hkcu.open_subkey(format!(r"{CLASSES}\{PROG_ID}\shell\open\command")) else {
+        return;
+    };
+    let Ok(command) = key.get_value::<String, _>("") else {
+        return;
+    };
+    let Ok(exe) = std::env::current_exe() else {
+        return;
+    };
+    if registered_exe(&command).is_some_and(|p| p != exe && !p.exists())
+        && apply(&hkcu, &exe).is_ok()
+    {
+        notify_shell();
+    }
+}
+
+#[derive(Clone, Copy)]
+pub enum Action {
+    Register,
+    Unregister,
+}
+
+/// Runs `action` and reports the outcome in a small dialog (release builds have no console).
+pub fn run(action: Action) {
+    let result = match action {
+        Action::Register => register().map(|_| crate::text::registered()),
+        Action::Unregister => unregister().map(|_| crate::text::unregistered()),
+    };
+    let (level, msg) = match result {
+        Ok(msg) => (rfd::MessageLevel::Info, msg.to_owned()),
+        Err(e) => (
+            rfd::MessageLevel::Error,
+            format!("{}: {e}", crate::text::register_failed()),
+        ),
+    };
+    rfd::MessageDialog::new()
+        .set_title(crate::text::APP)
+        .set_level(level)
+        .set_description(msg)
+        .show();
+}
+
+fn register() -> io::Result<()> {
     let exe = std::env::current_exe()?;
     apply(&RegKey::predef(HKEY_CURRENT_USER), &exe)?;
     notify_shell();
@@ -134,7 +187,7 @@ pub fn register() -> io::Result<()> {
     Ok(())
 }
 
-pub fn unregister() -> io::Result<()> {
+fn unregister() -> io::Result<()> {
     remove(&RegKey::predef(HKEY_CURRENT_USER))?;
     notify_shell();
     Ok(())
@@ -162,6 +215,16 @@ mod tests {
                         && n == PROG_ID)
             );
         }
+    }
+
+    #[test]
+    fn registered_exe_is_the_quoted_part() {
+        assert_eq!(
+            registered_exe(r#""C:\a b\ferrosheet.exe" "%1""#),
+            Some(Path::new(r"C:\a b\ferrosheet.exe"))
+        );
+        assert_eq!(registered_exe("ferrosheet.exe %1"), None);
+        assert_eq!(registered_exe(r#""unterminated"#), None);
     }
 
     /// Writes into a throwaway key instead of the real classes, then removes it again.

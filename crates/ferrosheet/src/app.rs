@@ -65,6 +65,9 @@ enum Cmd {
     Rename(usize, String),
     DeleteSheet(usize),
     About,
+    /// Add ferrosheet to "Open with" and open the default-apps settings.
+    #[cfg(windows)]
+    Register,
 }
 
 struct SheetView {
@@ -483,6 +486,8 @@ impl App {
             Cmd::Style(c) => self.style(ctx, c),
             Cmd::Zoom(z) => self.set_zoom(z),
             Cmd::About => self.about = true,
+            #[cfg(windows)]
+            Cmd::Register => crate::register::run(crate::register::Action::Register),
             Cmd::SelectCols | Cmd::SelectRows | Cmd::FitCols | Cmd::FitRows => {
                 self.whole_lines(&cmd)
             }
@@ -991,6 +996,11 @@ impl App {
                     Cmd::SaveAs,
                 );
                 ui.separator();
+                #[cfg(windows)]
+                {
+                    item(ui, &mut cmd, text::set_default(), "", true, Cmd::Register);
+                    ui.separator();
+                }
                 item(ui, &mut cmd, text::exit(), "", true, Cmd::Exit);
             });
             ui.menu_button(text::menu_edit(), |ui| {

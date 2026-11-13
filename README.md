@@ -63,9 +63,11 @@ Reproduce with `cargo run --release -p ferrosheet-core --example gen_big` and
 Download the latest build from [Releases](https://github.com/10eputzen/ferrosheet/releases).
 
 - **Windows:** unzip and run `ferrosheet.exe`. The exe is not signed yet, so SmartScreen warns
-  on first start: *More info → Run anyway*. To open spreadsheets with a double-click, run
-  `ferrosheet.exe --register` once and pick ferrosheet in the settings page that opens.
-  `--unregister` removes it again. Both only touch the current user's registry.
+  on first start: *More info → Run anyway*. To open spreadsheets with a double-click, choose
+  *File → Set as default app …* (or run `ferrosheet.exe --register`) once and pick ferrosheet
+  in the settings page that opens. If you move the exe later, the next start updates the
+  association. `--unregister` removes it again. All of this only touches the current user's
+  registry.
 - **Linux (x86_64):** `tar xzf ferrosheet-linux-x86_64.tar.gz && ./ferrosheet file.xlsx`.
   Built on Ubuntu 22.04, needs an X11 or Wayland desktop with OpenGL.
 - **macOS:** not yet, see the [roadmap](docs/roadmap.md#platforms).
