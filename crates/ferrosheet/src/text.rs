@@ -187,6 +187,8 @@ texts! {
     unregistered: "ferrosheet ist nicht mehr mit Tabellen verknüpft.",
         "ferrosheet is no longer associated with spreadsheets.";
     #[cfg(windows)]
+    set_default: "Als Standard-App festlegen …", "Set as default app …";
+    #[cfg(windows)]
     register_failed: "Verknüpfung fehlgeschlagen", "Association failed";
 }
 

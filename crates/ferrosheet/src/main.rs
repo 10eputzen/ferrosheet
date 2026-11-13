@@ -23,28 +23,19 @@ fn main() -> eframe::Result {
     }
     #[cfg(windows)]
     if let Some(flag) = arg.as_ref().and_then(|a| a.to_str()) {
-        let result = match flag {
-            "--register" => Some(register::register().map(|_| text::registered())),
-            "--unregister" => Some(register::unregister().map(|_| text::unregistered())),
+        let action = match flag {
+            "--register" => Some(register::Action::Register),
+            "--unregister" => Some(register::Action::Unregister),
             _ => None,
         };
-        if let Some(result) = result {
-            // Release builds have no console, so report in a small dialog.
-            let (level, msg) = match result {
-                Ok(msg) => (rfd::MessageLevel::Info, msg.to_owned()),
-                Err(e) => (
-                    rfd::MessageLevel::Error,
-                    format!("{}: {e}", text::register_failed()),
-                ),
-            };
-            rfd::MessageDialog::new()
-                .set_title(text::APP)
-                .set_level(level)
-                .set_description(msg)
-                .show();
+        if let Some(action) = action {
+            register::run(action);
             return Ok(());
         }
     }
+    // Moved the exe after registering: point the association at the new place.
+    #[cfg(windows)]
+    register::refresh_if_moved();
     // An update downloaded last time: swap it in and start that instead.
     if restore.is_none() && update::apply_pending(&args) {
         return Ok(());
