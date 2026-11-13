@@ -152,8 +152,10 @@ pub fn restart(args: &[OsString], restore: Option<Restore>) -> Result<(), String
         c.arg(r.to_arg());
     }
     let child = c.args(args).spawn().map_err(|e| e.to_string())?;
+    let started = Instant::now();
     *WATCH.lock().unwrap_or_else(|e| e.into_inner()) = Some(Watch {
         child,
+        started,
         exe,
         args: args.to_vec(),
         restore,
@@ -164,6 +166,8 @@ pub fn restart(args: &[OsString], restore: Option<Restore>) -> Result<(), String
 /// A version started after a swap, watched until it has run for [`TRIAL`].
 struct Watch {
     child: std::process::Child,
+    /// The trial counts from here, as the new version's [`clean_up`] does.
+    started: Instant,
     exe: PathBuf,
     args: Vec<OsString>,
     restore: Option<Restore>,
@@ -178,10 +182,16 @@ pub fn finish() {
     let Some(mut w) = watch else {
         return;
     };
-    if survives(&mut w.child) || roll_back(&w.exe).is_err() {
+    if survives(&mut w.child, w.started) {
         return;
     }
-    let mut c = Command::new(&w.exe);
+    // If the files cannot be swapped back, start the old one where it lies, so that
+    // the user is not left without a window.
+    let exe = match roll_back(&w.exe) {
+        Ok(()) => w.exe,
+        Err(_) => old_path(&w.exe),
+    };
+    let mut c = Command::new(exe);
     if let Some(r) = w.restore {
         c.arg(r.to_arg());
     }
@@ -190,8 +200,7 @@ pub fn finish() {
 
 /// False if the process exited with an error before [`TRIAL`] was over. A clean exit
 /// (the user closed it again) or still running counts as a successful start.
-fn survives(child: &mut std::process::Child) -> bool {
-    let start = Instant::now();
+fn survives(child: &mut std::process::Child, start: Instant) -> bool {
     while start.elapsed() < TRIAL {
         match child.try_wait() {
             Ok(Some(status)) => return status.success(),
@@ -211,7 +220,15 @@ fn roll_back(exe: &Path) -> std::io::Result<()> {
     }
     let bad = sibling(exe, "bad");
     let _ = std::fs::remove_file(&bad);
-    std::fs::rename(exe, &bad)?;
+    // The crashed exe can stay locked for a moment (crash reporter, virus scanner).
+    let mut tries = 0;
+    while let Err(e) = std::fs::rename(exe, &bad) {
+        tries += 1;
+        if tries == 10 {
+            return Err(e);
+        }
+        std::thread::sleep(Duration::from_millis(300));
+    }
     if let Err(e) = std::fs::rename(&old, exe) {
         let _ = std::fs::rename(&bad, exe);
         return Err(e);
@@ -246,8 +263,9 @@ pub fn apply_pending(args: &[OsString]) -> bool {
         let _ = std::fs::remove_file(&pending);
         return false;
     }
+    let now = Instant::now();
     let started = Command::new(&exe).args(args).spawn();
-    if started.is_ok_and(|mut child| survives(&mut child)) {
+    if started.is_ok_and(|mut child| survives(&mut child, now)) {
         return true;
     }
     // Back to this version; even if that fails, this process keeps running.
@@ -324,7 +342,8 @@ fn download_into(version: &str, dir: &Path, pending: &Path) -> Result<(), String
     {
         return Err(format!("{file}: the new version does not start"));
     }
-    let _ = std::fs::write(note_path(pending, "update-version"), version);
+    // Without this note a failing version could not be skipped after a roll-back.
+    std::fs::write(note_path(pending, "update-version"), version).map_err(|e| e.to_string())?;
     // Moved in one step, so a half-finished download never looks like an update.
     std::fs::rename(unpacked, pending).map_err(|e| e.to_string())
 }
@@ -552,8 +571,11 @@ mod tests {
             (["sh", "-c", "exit 0"], ["sh", "-c", "exit 3"])
         };
         let start = |c: [&str; 3]| Command::new(c[0]).args(&c[1..]).spawn().unwrap();
-        assert!(survives(&mut start(ok)));
-        assert!(!survives(&mut start(fail)));
+        assert!(survives(&mut start(ok), Instant::now()));
+        assert!(!survives(&mut start(fail), Instant::now()));
+        // the trial is over: a later exit no longer counts
+        let late = Instant::now() - TRIAL;
+        assert!(survives(&mut start(fail), late));
     }
 
     #[test]
