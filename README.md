@@ -68,7 +68,7 @@ Download the latest build from [Releases](https://github.com/10eputzen/ferroshee
   `--unregister` removes it again. Both only touch the current user's registry.
 - **Linux (x86_64):** `tar xzf ferrosheet-linux-x86_64.tar.gz && ./ferrosheet file.xlsx`.
   Built on Ubuntu 22.04, needs an X11 or Wayland desktop with OpenGL.
-- **macOS:** not yet, see the [roadmap](docs/roadmap.md#platforms).
+- **macOS:** not yet, see [#7](https://github.com/10eputzen/ferrosheet/issues/7).
 
 **Updates:** at start ferrosheet asks GitHub for the latest release tag, in the background and
 nothing else is sent. If there is a newer version, it is downloaded in the background too, and only
