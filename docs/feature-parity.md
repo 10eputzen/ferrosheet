@@ -1,14 +1,13 @@
 # Feature parity with LibreOffice Calc (rough)
 
-ferrosheet is a viewer first. These tables show where it stands against LibreOffice Calc,
+ferrosheet is a viewer first. This table shows where it stands against LibreOffice Calc,
 so nobody expects an office suite. ✅ done · 🟡 planned · ❌ out of scope
 
 Spreadsheet functions (SUM, VLOOKUP, …) have their own list: [function parity](feature-parity-functions.md).
 
-## Files
-
 | Feature | LibreOffice Calc | ferrosheet |
 | --- | --- | --- |
+| **Files** | | |
 | Open xls, xlsx, xlsm, xlsb, ods | ✅ | ✅ |
 | Open csv, tsv | ✅ (import dialog) | ✅ delimiter, encoding and decimals detected, no dialog; codes with leading zeros stay text |
 | Open other formats (Numbers, dbf, html, xml, Lotus) | ✅ | ❌ |
@@ -20,11 +19,7 @@ Spreadsheet functions (SUM, VLOOKUP, …) have their own list: [function parity]
 | Start-up and load time | seconds | ✅ window < 300 ms, 100k×30 cells: first rows after 11 ms, all in ~0.7 s |
 | Install size | ~350 MB | ✅ single 8 MB exe |
 | Automatic updates | via system or download | ✅ downloaded in the background, restart in an instant; manual check in *Help → About* |
-
-## Viewing
-
-| Feature | LibreOffice Calc | ferrosheet |
-| --- | --- | --- |
+| **Viewing** | | |
 | Multiple sheets, switch with Ctrl+PgUp/PgDn | ✅ | ✅ |
 | Cell values: numbers, text, dates, durations, booleans, errors | ✅ | ✅ |
 | Number formats from the file (currency, custom) | ✅ | 🟡 default formats only (German or neutral, by system language) |
@@ -38,11 +33,7 @@ Spreadsheet functions (SUM, VLOOKUP, …) have their own list: [function parity]
 | Split window, several windows on one file | ✅ | ❌ |
 | Light and dark mode | ✅ | ✅ |
 | Interface language | many | German, English |
-
-## Finding and selecting
-
-| Feature | LibreOffice Calc | ferrosheet |
-| --- | --- | --- |
+| **Finding and selecting** | | |
 | Search, case-insensitive, current or all sheets | ✅ | ✅ |
 | Search with regex | ✅ | ✅ toggle next to "All sheets", invalid pattern shows a hint |
 | Replace | ✅ | 🟡 phase 2 |
@@ -50,11 +41,7 @@ Spreadsheet functions (SUM, VLOOKUP, …) have their own list: [function parity]
 | Select cells, rows, columns, all | ✅ | ✅ |
 | Copy as tab-separated text (pastes into Excel, Sheets, mail) | ✅ | ✅ plus raw values with Ctrl+Shift+C |
 | Sort and filter | ✅ | ❌ (maybe later, view-only) |
-
-## Editing
-
-| Feature | LibreOffice Calc | ferrosheet |
-| --- | --- | --- |
+| **Editing** | | |
 | Edit cells | ✅ | ✅ |
 | Undo, redo | ✅ | ✅ |
 | Paste | ✅ | ✅ tab-separated text from Excel, Sheets or ferrosheet (Ctrl+V, *Edit → Paste*); one value fills the selection; one undo step; values only, no formatting |
@@ -65,11 +52,7 @@ Spreadsheet functions (SUM, VLOOKUP, …) have their own list: [function parity]
 | Autofill (drag a series) | ✅ | ❌ |
 | Data validation, drop-down lists | ✅ | ❌ |
 | Cell and sheet protection | ✅ | ❌ |
-
-## Formulas and analysis
-
-| Feature | LibreOffice Calc | ferrosheet |
-| --- | --- | --- |
+| **Formulas and analysis** | | |
 | Show the formula of a cell | ✅ | ✅ (formula bar) |
 | Recalculate | ✅ | ✅ via IronCalc once editing starts, see [function parity](feature-parity-functions.md); before that the results stored in the file |
 | Enter formulas | ✅ | ✅ in English (`=SUM(A1:A3)`) |
@@ -81,11 +64,7 @@ Spreadsheet functions (SUM, VLOOKUP, …) have their own list: [function parity]
 | Charts | ✅ | ❌ |
 | Statistics dialogs (regression, sampling, …) | ✅ | ❌ |
 | Links to other files and external data | ✅ | ❌ |
-
-## Everything else
-
-| Feature | LibreOffice Calc | ferrosheet |
-| --- | --- | --- |
+| **Everything else** | | |
 | Images, shapes, comments, hyperlinks | ✅ | ❌ |
 | Forms and controls (buttons, check boxes) | ✅ | ❌ |
 | Macros, scripting | ✅ | ❌ |
