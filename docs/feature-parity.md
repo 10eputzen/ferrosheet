@@ -19,7 +19,7 @@ Spreadsheet functions (SUM, VLOOKUP, …) have their own list: [function parity]
 | Drag & drop, open via file association | ✅ | ✅ / 🟡 Windows registration |
 | Start-up and load time | seconds | ✅ window < 300 ms, 100k×30 cells: first rows after 11 ms, all in ~0.7 s |
 | Install size | ~350 MB | ✅ single 8 MB exe |
-| Automatic updates | via system or download | ✅ downloaded in the background, restart in an instant |
+| Automatic updates | via system or download | ✅ downloaded in the background, restart in an instant; manual check in *Help → About* |
 
 ## Viewing
 
@@ -73,6 +73,7 @@ Spreadsheet functions (SUM, VLOOKUP, …) have their own list: [function parity]
 | Show the formula of a cell | ✅ | ✅ (formula bar) |
 | Recalculate | ✅ | ✅ via IronCalc once editing starts, see [function parity](feature-parity-functions.md); before that the results stored in the file |
 | Enter formulas | ✅ | ✅ in English (`=SUM(A1:A3)`) |
+| Pick references by clicking or dragging while typing a formula, coloured references | ✅ | ✅ in the cell and the formula bar |
 | Named ranges | ✅ | ❌ |
 | Goal seek, solver, scenarios, what-if tables | ✅ | ❌ |
 | Pivot tables | ✅ | ❌ |
