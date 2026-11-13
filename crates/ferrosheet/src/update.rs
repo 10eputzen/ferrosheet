@@ -43,7 +43,10 @@ const BIN: &str = "ferrosheet";
 
 /// Public half of the release signing key (raw ed25519). The private half is the
 /// repository secret `UPDATE_SIGNING_KEY` and never leaves CI.
-const PUBLIC_KEY: [u8; 32] = [0; 32];
+const PUBLIC_KEY: [u8; 32] = [
+    12, 182, 187, 96, 145, 169, 227, 104, 4, 244, 248, 66, 182, 148, 1, 69, 62, 85, 33, 15, 121,
+    244, 39, 83, 57, 35, 215, 159, 189, 19, 222, 79,
+];
 
 /// How long a freshly swapped-in version has to prove it starts.
 const TRIAL: Duration = Duration::from_secs(15);
