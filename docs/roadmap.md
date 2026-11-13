@@ -24,20 +24,12 @@ almost no changes. The work is packaging.
 Decision: ship Linux and macOS unsigned together with the phase 1 release and explain the
 first start in the README. Sign once the project is public and has users.
 
-## Auto-update (before going public)
+## Auto-update
 
-Silent, like Chrome or VS Code – no prompt, no click. Effort ~1–1½ days.
-
-1. A few seconds after start (never blocking it), at most once a day, check the latest
-   GitHub release.
-2. Download the asset for the current platform in the background.
-3. Verify the signature (own ed25519 key, public key compiled in); discard anything that fails.
-4. Swap in the new binary on the next start; show "Updated to x.y.z" with a "What's new" link.
-5. Keep the previous binary; if the new one fails to start, fall back automatically.
-6. Opt-out in the settings; a beta channel can come later.
-
-Needs a public repo (release assets of a private repo are not downloadable without a token).
-Package managers (winget, Flathub/AppImage, Homebrew) come on top once the project is public.
+Done: silent check at start, background download, instant restart into the same window
+(0.3), signed releases and automatic fallback to the previous version (0.7). Open: once a
+day instead of every start, an opt-out in a settings dialog, a beta channel, and package
+managers (winget, Flathub/AppImage, Homebrew).
 
 ## Formulas
 

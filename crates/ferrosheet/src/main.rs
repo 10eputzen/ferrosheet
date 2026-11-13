@@ -69,7 +69,7 @@ fn main() -> eframe::Result {
         viewport,
         ..Default::default()
     };
-    eframe::run_native(
+    let result = eframe::run_native(
         text::APP,
         options,
         Box::new(move |cc| {
@@ -79,5 +79,8 @@ fn main() -> eframe::Result {
             }
             Ok(Box::new(app))
         }),
-    )
+    );
+    // After an update restart: stay (windowless) until the new version has started.
+    update::finish();
+    result
 }
