@@ -1,0 +1,31 @@
+name: Bug report
+description: Something does not work as expected, or a file opens incorrectly
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: Security problems please report privately (Security → Report a vulnerability), not here.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: What did you do, what did you expect, what happened instead?
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: "1. Open …\n2. Press …"
+  - type: input
+    id: version
+    attributes:
+      label: ferrosheet version and operating system
+      placeholder: e.g. 0.7.0 on Windows 11
+    validations:
+      required: true
+  - type: textarea
+    id: file
+    attributes:
+      label: Sample file or screenshot
+      description: If a file opens incorrectly, attach it or a small copy that shows the problem. Remove personal and confidential data first.

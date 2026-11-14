@@ -4,3 +4,12 @@ updates:
     directory: /
     schedule:
       interval: monthly
+  # Security updates arrive right away (repository setting); this groups the rest into one PR a month.
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: monthly
+    groups:
+      cargo:
+        patterns: ["*"]
+        update-types: [minor, patch]
