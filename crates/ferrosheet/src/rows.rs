@@ -50,6 +50,29 @@ impl RowHeights {
         }
     }
 
+    /// `count` rows were inserted before row `at`: resized rows below move down. `restore`
+    /// gives heights for the new rows (offset from `at`), e.g. when a deletion is undone.
+    pub fn insert(&mut self, at: u32, count: u32, restore: &[(u32, f32)]) {
+        let below = self.custom.split_off(&at);
+        for (r, h) in below {
+            self.custom.insert(r.saturating_add(count), h);
+        }
+        for &(off, h) in restore.iter().filter(|(off, _)| *off < count) {
+            self.custom.insert(at + off, h);
+        }
+    }
+
+    /// `count` rows from `at` were deleted: resized rows below move up. Returns the
+    /// heights of the deleted rows that were resized (offset from `at`).
+    pub fn delete(&mut self, at: u32, count: u32) -> Vec<(u32, f32)> {
+        let mut gone = self.custom.split_off(&at);
+        let below = gone.split_off(&at.saturating_add(count));
+        for (r, h) in below {
+            self.custom.insert(r - count, h);
+        }
+        gone.into_iter().map(|(r, h)| (r - at, h)).collect()
+    }
+
     /// Distance from the top of the sheet to the top of row `r`.
     pub fn top(&self, r: u32) -> f32 {
         r as f32 * self.base
@@ -113,6 +136,26 @@ mod tests {
         assert_eq!(rh.row_at(22.0 + 5.0), 1);
         assert_eq!(rh.row_at(22.0 + 10.0 + 22.0 + 22.0 + 49.0), 4);
         assert_eq!(rh.row_at(rh.top(5) + 1.0), 5);
+    }
+
+    #[test]
+    fn rows_move_with_insert_and_delete() {
+        let mut rh = RowHeights::default();
+        rh.set(1, 10.0);
+        rh.set(4, 50.0);
+        rh.set(5, 60.0);
+        rh.insert(2, 3, &[]);
+        assert_eq!(rh.height(1), 10.0);
+        assert_eq!(rh.height(4), ROW_H);
+        assert_eq!(rh.height(7), 50.0);
+        assert_eq!(rh.height(8), 60.0);
+        let gone = rh.delete(7, 1);
+        assert_eq!(gone, vec![(0, 50.0)]);
+        assert_eq!(rh.height(7), 60.0);
+        // Undoing the deletion brings the height back
+        rh.insert(7, 1, &gone);
+        assert_eq!(rh.height(7), 50.0);
+        assert_eq!(rh.height(8), 60.0);
     }
 
     #[test]

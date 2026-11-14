@@ -205,6 +205,38 @@ fn sync_sheets(doc: &mut Doc) {
         .min(doc.ids.len().saturating_sub(1));
 }
 
+/// Moves row heights and column widths with inserted or deleted lines; `undo` when the
+/// change is being taken back. The sizes of deleted lines are kept for their undo, one
+/// entry per deletion on the undo stack.
+fn move_sizes(
+    doc: &mut Doc,
+    sheet: Option<usize>,
+    lines: Lines,
+    insert: bool,
+    at: u32,
+    count: u32,
+    undo: bool,
+) {
+    let grid = sheet
+        .and_then(|i| doc.sheets.get_mut(i))
+        .and_then(|v| v.as_mut())
+        .map(|v| &mut v.grid);
+    if insert != undo {
+        // Lines come in: new ones, a redone insertion, or deleted ones coming back
+        let restore = if undo { doc.removed.pop() } else { None };
+        if let Some(g) = grid {
+            g.insert_lines(lines, at, count, restore);
+        }
+    } else {
+        let gone = grid
+            .map(|g| g.delete_lines(lines, at, count))
+            .unwrap_or_default();
+        if !undo {
+            doc.removed.push(gone);
+        }
+    }
+}
+
 impl App {
     pub(super) fn dirty(&self) -> bool {
         self.doc.as_ref().is_some_and(|d| d.dirty)
@@ -308,6 +340,9 @@ impl App {
             let Some(op) = doc.pending.pop_front() else {
                 return;
             };
+            // Row heights and column widths to move with inserted/deleted lines.
+            let mut sizes = None;
+            let mut stepped = None;
             let result = match op {
                 Op::Input { sheet, pos, text } => s.set_input(sheet, pos.row, pos.col, &text),
                 Op::Paste { sheet, sel, text } => s.paste(sheet, &sel, &text).map(|pasted| {
@@ -318,17 +353,20 @@ impl App {
                 Op::Lines {
                     sheet,
                     lines,
-                    insert: true,
+                    insert,
                     at,
                     count,
-                } => s.insert_lines(sheet, lines, at, count),
-                Op::Lines {
-                    sheet,
-                    lines,
-                    at,
-                    count,
-                    ..
-                } => s.delete_lines(sheet, lines, at, count),
+                } => {
+                    let r = if insert {
+                        s.insert_lines(sheet, lines, at, count)
+                    } else {
+                        s.delete_lines(sheet, lines, at, count)
+                    };
+                    if r.is_ok() {
+                        sizes = Some((Some(sheet), lines, insert, at, count, false));
+                    }
+                    r
+                }
                 Op::Clear { sheet, sel } => s.clear(sheet, &sel),
                 Op::Style { sheet, sel, change } => s.set_style(sheet, &sel, change),
                 Op::Replace {
@@ -346,12 +384,14 @@ impl App {
                     }
                     r.map(|_| ())
                 }
-                Op::Undo => {
-                    s.undo();
-                    Ok(())
-                }
-                Op::Redo => {
-                    s.redo();
+                Op::Undo | Op::Redo => {
+                    let undo = matches!(op, Op::Undo);
+                    if undo {
+                        s.undo()
+                    } else {
+                        s.redo()
+                    };
+                    stepped = s.take_stepped_lines().map(|c| (c, undo));
                     Ok(())
                 }
                 Op::AddSheet => s.add_sheet(),
@@ -363,6 +403,13 @@ impl App {
                 }
             };
             sync_sheets(doc);
+            if let Some((c, undo)) = stepped {
+                let sheet = doc.ids.iter().position(|&id| id == c.sheet_id);
+                sizes = Some((sheet, c.lines, c.insert, c.at, c.count, undo));
+            }
+            if let Some((sheet, lines, insert, at, count, undo)) = sizes {
+                move_sizes(doc, sheet, lines, insert, at, count, undo);
+            }
             rebuild_moved(doc);
             for idx in 0..doc.sheets.len() {
                 refresh_sheet(doc, idx);

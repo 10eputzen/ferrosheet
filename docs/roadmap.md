@@ -10,8 +10,7 @@ Open work lives in the [issues](https://github.com/10eputzen/ferrosheet/issues).
 this order:
 
 1. Close the gaps in editing: `#REF!` after undoing a deletion
-   ([#3](https://github.com/10eputzen/ferrosheet/issues/3)), column widths that do not move
-   ([#4](https://github.com/10eputzen/ferrosheet/issues/4)), paste with formatting
+   ([#3](https://github.com/10eputzen/ferrosheet/issues/3)), paste with formatting
    ([#5](https://github.com/10eputzen/ferrosheet/issues/5)).
 2. Save an xlsx without losing comments, validation, filters, tables or charts
    ([#6](https://github.com/10eputzen/ferrosheet/issues/6)).
