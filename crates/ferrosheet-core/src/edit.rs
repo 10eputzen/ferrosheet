@@ -72,15 +72,27 @@ pub enum Lines {
     Cols,
 }
 
+/// Rows or columns inserted or deleted on a sheet (by its id), as undo and redo report
+/// them so the view can move what it keeps per line (widths, heights) along.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LineChange {
+    pub sheet_id: u32,
+    pub lines: Lines,
+    pub insert: bool,
+    /// First line (0-based) and how many.
+    pub at: u32,
+    pub count: u32,
+}
+
 /// Formulas of a sheet by (row, col), each starting with `=`.
 type Formulas = HashMap<(u32, u32), String>;
 
 /// One entry of the model's undo history, as far as the display cares: whether it moved
-/// the cells of a sheet (by its id), so the whole sheet has to be shown anew.
+/// the cells of a sheet (inserted or deleted lines), so the whole sheet has to be shown anew.
 #[derive(Clone, Copy)]
 enum Step {
     Cells,
-    Moved(u32),
+    Moved(LineChange),
 }
 
 pub struct EditSession {
@@ -95,6 +107,8 @@ pub struct EditSession {
     redo_steps: Vec<(Step, usize)>,
     /// Sheet ids whose rows or columns moved since [`EditSession::take_moved`].
     moved: BTreeSet<u32>,
+    /// The line change the last undo or redo took back or did again.
+    stepped: Option<LineChange>,
 }
 
 fn locale_id(locale: Locale) -> &'static str {
@@ -185,6 +199,7 @@ impl EditSession {
             undo_steps: Vec::new(),
             redo_steps: Vec::new(),
             moved: BTreeSet::new(),
+            stepped: None,
         }
     }
 
@@ -195,8 +210,8 @@ impl EditSession {
     fn done_n(&mut self, step: Step, entries: usize) {
         self.undo_steps.push((step, entries));
         self.redo_steps.clear();
-        if let Step::Moved(id) = step {
-            self.relayout(id);
+        if let Step::Moved(c) = step {
+            self.relayout(c.sheet_id);
         }
     }
 
@@ -455,7 +470,7 @@ impl EditSession {
             Lines::Rows => self.model.insert_rows(s, at, n)?,
             Lines::Cols => self.model.insert_columns(s, at, n)?,
         }
-        self.lines_done(sheet);
+        self.lines_done(sheet, lines, true, at as u32 - 1, count);
         Ok(())
     }
 
@@ -473,13 +488,19 @@ impl EditSession {
             Lines::Rows => self.model.delete_rows(s, at, n)?,
             Lines::Cols => self.model.delete_columns(s, at, n)?,
         }
-        self.lines_done(sheet);
+        self.lines_done(sheet, lines, false, at as u32 - 1, count);
         Ok(())
     }
 
-    fn lines_done(&mut self, sheet: usize) {
+    fn lines_done(&mut self, sheet: usize, lines: Lines, insert: bool, at: u32, count: u32) {
         match self.sheet_id(sheet) {
-            Some(id) => self.done(Step::Moved(id)),
+            Some(sheet_id) => self.done(Step::Moved(LineChange {
+                sheet_id,
+                lines,
+                insert,
+                at,
+                count,
+            })),
             None => self.done(Step::Cells),
         }
     }
@@ -507,8 +528,15 @@ impl EditSession {
         self.step_back(false)
     }
 
+    /// The rows or columns the last [`undo`](Self::undo) or [`redo`](Self::redo) took
+    /// back or inserted/deleted again, if that step was one; asking clears it.
+    pub fn take_stepped_lines(&mut self) -> Option<LineChange> {
+        self.stepped.take()
+    }
+
     /// Undoes (`undo`) or redoes the last step with all its model entries.
     fn step_back(&mut self, undo: bool) -> bool {
+        self.stepped = None;
         let can = if undo {
             self.model.can_undo()
         } else {
@@ -548,8 +576,9 @@ impl EditSession {
             &mut self.undo_steps
         };
         to.push((step, entries));
-        if let Step::Moved(id) = step {
-            self.relayout(id);
+        if let Step::Moved(c) = step {
+            self.relayout(c.sheet_id);
+            self.stepped = Some(c);
         }
         true
     }

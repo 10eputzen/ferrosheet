@@ -122,6 +122,8 @@ struct Doc {
     pending: VecDeque<Op>,
     /// Changed since opened or saved.
     dirty: bool,
+    /// Sizes of deleted rows/columns, one entry per deletion on the undo stack (newest last).
+    removed: Vec<grid::Removed>,
 }
 
 impl Doc {
@@ -314,6 +316,7 @@ impl App {
             text_format: None,
             engine: Engine::Idle,
             pending: VecDeque::new(),
+            removed: Vec::new(),
             dirty: false,
         });
         self.update_title(ctx);
@@ -2365,6 +2368,75 @@ mod tests {
                 .formulas
                 .get(&(5, 3))
                 .is_some_and(|f| f == "=SUM(D2:D4)")
+        });
+    }
+
+    #[test]
+    fn sizes_move_with_inserted_and_deleted_lines_and_come_back_on_undo() {
+        let mut h = open(demo());
+        let (wide, tall) = (150.0, 60.0);
+        {
+            let g = &mut h.state_mut().active_view().unwrap().grid;
+            g.col_widths[1] = wide;
+            g.row_heights.set(3, tall);
+        }
+        let grid = |h: &mut Harness<'_, App>| {
+            let g = &h.state_mut().active_view().unwrap().grid;
+            (
+                g.col_widths[1],
+                g.col_widths[2],
+                g.row_heights.height(3),
+                g.row_heights.height(4),
+            )
+        };
+        let (w0, h0) = (grid(&mut h).1, grid(&mut h).3);
+
+        // a column left of B: B's width moves to C
+        select(&mut h, 0, 1);
+        run(&mut h, Cmd::InsertCols(false));
+        settle(&mut h, |app| {
+            app.active_view().unwrap().grid.col_widths[2] == wide
+        });
+        assert_eq!(grid(&mut h).0, w0);
+
+        // undo takes the new column out again
+        h.key_press_modifiers(Modifiers::COMMAND, Key::Z);
+        settle(&mut h, |app| {
+            app.active_view().unwrap().grid.col_widths[1] == wide
+        });
+
+        // deleting B drops its width, undo brings it back
+        select(&mut h, 0, 1);
+        run(&mut h, Cmd::DeleteCols);
+        settle(&mut h, |app| {
+            app.active_view().unwrap().grid.col_widths[1] != wide
+        });
+        h.key_press_modifiers(Modifiers::COMMAND, Key::Z);
+        settle(&mut h, |app| {
+            app.active_view().unwrap().grid.col_widths[1] == wide
+        });
+
+        // a row above row 4 pushes its height down; deleting it and undoing restores it
+        select(&mut h, 3, 0);
+        run(&mut h, Cmd::InsertRows(false));
+        settle(&mut h, |app| {
+            app.active_view().unwrap().grid.row_heights.height(4) == tall
+        });
+        assert_eq!(grid(&mut h).2, h0);
+        select(&mut h, 4, 0);
+        run(&mut h, Cmd::DeleteRows);
+        settle(&mut h, |app| {
+            app.active_view().unwrap().grid.row_heights.height(4) == h0
+        });
+        h.key_press_modifiers(Modifiers::COMMAND, Key::Z);
+        settle(&mut h, |app| {
+            app.active_view().unwrap().grid.row_heights.height(4) == tall
+        });
+
+        // redo deletes it again
+        h.key_press_modifiers(Modifiers::COMMAND | Modifiers::SHIFT, Key::Z);
+        settle(&mut h, |app| {
+            app.active_view().unwrap().grid.row_heights.height(4) == h0
         });
     }
 

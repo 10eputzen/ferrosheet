@@ -6,8 +6,8 @@ use eframe::egui::{
     Stroke, UiBuilder, Vec2, pos2, vec2,
 };
 use ferrosheet_core::{
-    CellPos, CellStyle, CellValue, Selection, Sheet, column_name, find_refs, ref_slot, ref_text,
-    splice,
+    CellPos, CellStyle, CellValue, Lines, Selection, Sheet, column_name, find_refs, ref_slot,
+    ref_text, splice,
 };
 
 #[cfg(test)]
@@ -50,6 +50,13 @@ pub struct GridState {
     resizing: Option<Resize>,
     /// Zoom the widths and heights are stored at (0 = not drawn yet, i.e. 100 %).
     zoom: f32,
+}
+
+/// Sizes of deleted rows or columns at 100 % zoom, kept so undo can bring them back.
+#[derive(Debug, Default)]
+pub struct Removed {
+    cols: Vec<f32>,
+    rows: Vec<(u32, f32)>,
 }
 
 /// Columns or rows (first, last) to fit to their content.
@@ -232,6 +239,53 @@ impl GridState {
 
     pub fn visible_rows(&self) -> i64 {
         ((self.view.y / self.row_heights.base()) as i64 - 1).max(1)
+    }
+
+    /// Rows or columns were inserted before `at`: sizes move with their lines. `restore`
+    /// gives the sizes of the new lines when a deletion is undone, otherwise they get
+    /// the default size.
+    pub fn insert_lines(&mut self, lines: Lines, at: u32, count: u32, restore: Option<Removed>) {
+        let z = if self.zoom > 0.0 { self.zoom } else { 1.0 };
+        let restore = restore.unwrap_or_default();
+        match lines {
+            Lines::Cols => {
+                let at = at as usize;
+                if at <= self.col_widths.len() {
+                    let widths =
+                        (0..count as usize).map(|i| restore.cols.get(i).unwrap_or(&DEFAULT_W) * z);
+                    self.col_widths.splice(at..at, widths);
+                }
+            }
+            Lines::Rows => {
+                let heights: Vec<_> = restore.rows.iter().map(|&(r, h)| (r, h * z)).collect();
+                self.row_heights.insert(at, count, &heights);
+            }
+        }
+    }
+
+    /// Rows or columns from `at` were deleted: the sizes after them move up or left.
+    /// Returns the deleted sizes for undo.
+    pub fn delete_lines(&mut self, lines: Lines, at: u32, count: u32) -> Removed {
+        let z = if self.zoom > 0.0 { self.zoom } else { 1.0 };
+        match lines {
+            Lines::Cols => {
+                let len = self.col_widths.len();
+                let (from, to) = (
+                    (at as usize).min(len),
+                    (at as usize + count as usize).min(len),
+                );
+                Removed {
+                    cols: self.col_widths.drain(from..to).map(|w| w / z).collect(),
+                    rows: Vec::new(),
+                }
+            }
+            Lines::Rows => Removed {
+                cols: Vec::new(),
+                rows: (self.row_heights.delete(at, count).into_iter())
+                    .map(|(r, h)| (r, h / z))
+                    .collect(),
+            },
+        }
     }
 
     /// Stores widths and heights for `zoom` (1.0 = 100 %).
