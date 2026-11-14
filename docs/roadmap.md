@@ -9,8 +9,7 @@ it can do compared with LibreOffice Calc is in the [feature parity](feature-pari
 Open work lives in the [issues](https://github.com/10eputzen/ferrosheet/issues). Roughly in
 this order:
 
-1. Close the gaps in editing: `#REF!` after undoing a deletion
-   ([#3](https://github.com/10eputzen/ferrosheet/issues/3)), paste with formatting
+1. Close the gaps in editing: paste with formatting
    ([#5](https://github.com/10eputzen/ferrosheet/issues/5)).
 2. Save an xlsx without losing comments, validation, filters, tables or charts
    ([#6](https://github.com/10eputzen/ferrosheet/issues/6)).
