@@ -9,10 +9,11 @@ use std::path::Path;
 
 use ironcalc::base::cell::CellValue as IcValue;
 use ironcalc::base::expressions::types::Area;
+use ironcalc::base::types::Cell;
 use ironcalc::base::types::Color;
 use ironcalc::base::{Model, UserModel};
 
-use crate::{CellError, CellPos, CellStyle, CellValue, Locale, Query, Selection, Sheet};
+use crate::{CellError, CellPos, CellStyle, CellValue, Locale, Query, Selection, Sheet, find_refs};
 
 /// Number formats offered in the format bar.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -470,12 +471,13 @@ impl EditSession {
             Lines::Rows => self.model.insert_rows(s, at, n)?,
             Lines::Cols => self.model.insert_columns(s, at, n)?,
         }
-        self.lines_done(sheet, lines, true, at as u32 - 1, count);
+        self.lines_done(sheet, lines, true, at as u32 - 1, count, 1);
         Ok(())
     }
 
     /// Deletes `count` rows or columns from `at` (0-based). Formulas pointing at deleted
-    /// cells show `#REF!`, the others follow their cells.
+    /// cells show `#REF!`, the others follow their cells. Undo brings the broken formulas
+    /// back too.
     pub fn delete_lines(
         &mut self,
         sheet: usize,
@@ -483,25 +485,109 @@ impl EditSession {
         at: u32,
         count: u32,
     ) -> Result<(), String> {
-        let (s, at, n) = (sheet as u32, at as i32 + 1, count as i32);
-        match lines {
-            Lines::Rows => self.model.delete_rows(s, at, n)?,
-            Lines::Cols => self.model.delete_columns(s, at, n)?,
+        // IronCalc's undo re-inserts the lines but leaves formulas elsewhere at `#REF!`.
+        // Writing every formula that points into the deleted lines unchanged, in the same
+        // undo step just before the deletion, fixes that: undoing the write puts the
+        // formula back as it was.
+        let keep = self.formulas_into(sheet, lines, at, count);
+        self.model.pause_evaluation();
+        let mut entries = 0;
+        let mut result = Ok(());
+        for (s, r, c, f) in &keep {
+            result = self
+                .model
+                .set_user_input(*s as u32, *r as i32 + 1, *c as i32 + 1, f);
+            if result.is_err() {
+                break;
+            }
+            entries += 1;
         }
-        self.lines_done(sheet, lines, false, at as u32 - 1, count);
-        Ok(())
+        if result.is_ok() {
+            let (s, at, n) = (sheet as u32, at as i32 + 1, count as i32);
+            result = match lines {
+                Lines::Rows => self.model.delete_rows(s, at, n),
+                Lines::Cols => self.model.delete_columns(s, at, n),
+            };
+        }
+        self.model.resume_evaluation();
+        self.model.evaluate();
+        match result {
+            Ok(()) => self.lines_done(sheet, lines, false, at, count, entries + 1),
+            // What was written stays one undoable step, so the history stays in step.
+            Err(_) if entries > 0 => self.done_n(Step::Cells, entries),
+            Err(_) => {}
+        }
+        result
     }
 
-    fn lines_done(&mut self, sheet: usize, lines: Lines, insert: bool, at: u32, count: u32) {
+    /// Formulas of any sheet with a reference into `count` lines from `at` on `sheet`:
+    /// (sheet, row, col, formula as typed). May include a few that do not break.
+    fn formulas_into(
+        &self,
+        sheet: usize,
+        lines: Lines,
+        at: u32,
+        count: u32,
+    ) -> Vec<(usize, u32, u32, String)> {
+        let names = self.sheet_names();
+        let Some(target) = names.get(sheet).map(|n| n.to_lowercase()) else {
+            return Vec::new();
+        };
+        let hits = |first: u32, last: u32| first < at + count && last >= at;
+        let ws = &self.model.get_model().workbook.worksheets;
+        let cells: Vec<_> = ws
+            .iter()
+            .enumerate()
+            .flat_map(|(i, w)| {
+                w.sheet_data
+                    .cells()
+                    // array formulas would turn into plain ones; leave them alone
+                    .filter(|(_, _, cell)| {
+                        cell.has_formula() && !matches!(**cell, Cell::ArrayFormula { .. })
+                    })
+                    .map(move |(r, c, _)| (i, r as u32 - 1, c as u32 - 1))
+            })
+            .collect();
+        cells
+            .into_iter()
+            .filter_map(|(s, r, c)| {
+                let f = self.content(s, r, c);
+                let into = find_refs(&f).iter().any(|x| {
+                    let on = match &x.sheet {
+                        Some(n) => n.to_lowercase() == target,
+                        None => s == sheet,
+                    };
+                    on && match lines {
+                        Lines::Rows => hits(x.first.row, x.last.row),
+                        Lines::Cols => hits(x.first.col, x.last.col),
+                    }
+                });
+                into.then_some((s, r, c, f))
+            })
+            .collect()
+    }
+
+    fn lines_done(
+        &mut self,
+        sheet: usize,
+        lines: Lines,
+        insert: bool,
+        at: u32,
+        count: u32,
+        entries: usize,
+    ) {
         match self.sheet_id(sheet) {
-            Some(sheet_id) => self.done(Step::Moved(LineChange {
-                sheet_id,
-                lines,
-                insert,
-                at,
-                count,
-            })),
-            None => self.done(Step::Cells),
+            Some(sheet_id) => self.done_n(
+                Step::Moved(LineChange {
+                    sheet_id,
+                    lines,
+                    insert,
+                    at,
+                    count,
+                }),
+                entries,
+            ),
+            None => self.done_n(Step::Cells, entries),
         }
     }
 
@@ -1013,6 +1099,34 @@ mod tests {
         s.delete_lines(0, Lines::Rows, 0, 1).unwrap();
         assert_eq!(s.formula(0, 1, 1).as_deref(), Some("=#REF!*A1"));
         assert_eq!(s.snapshot(0).0.display(1, 1), "#REF!");
+
+        // undo brings the formula back as one step, redo breaks it again
+        assert!(s.undo());
+        assert_eq!(s.formula(0, 2, 1).as_deref(), Some("=A1*A2"));
+        assert_eq!(s.snapshot(0).0.display(2, 1), "6");
+        assert!(s.redo());
+        assert_eq!(s.formula(0, 1, 1).as_deref(), Some("=#REF!*A1"));
+        assert!(s.undo());
+        assert_eq!(s.formula(0, 2, 1).as_deref(), Some("=A1*A2"));
+        // the step before the deletion is still the input of the formula
+        assert!(s.undo());
+        assert_eq!(s.formula(0, 2, 1), None);
+    }
+
+    #[test]
+    fn undoing_a_column_deletion_restores_formulas_on_other_sheets() {
+        let mut s = blank(Locale::Invariant);
+        s.set_input(0, 0, 0, "1").unwrap();
+        s.set_input(0, 0, 1, "=A1").unwrap();
+        s.add_sheet().unwrap();
+        s.set_input(1, 0, 0, "=S!A1+1").unwrap();
+        s.delete_lines(0, Lines::Cols, 0, 1).unwrap();
+        assert_eq!(s.formula(0, 0, 0).as_deref(), Some("=#REF!"));
+        assert!(s.formula(1, 0, 0).unwrap().contains("#REF!"));
+        assert!(s.undo());
+        assert_eq!(s.formula(0, 0, 1).as_deref(), Some("=A1"));
+        assert_eq!(s.formula(1, 0, 0).as_deref(), Some("=S!A1+1"));
+        assert_eq!(s.snapshot(1).0.display(0, 0), "2");
     }
 
     #[test]
