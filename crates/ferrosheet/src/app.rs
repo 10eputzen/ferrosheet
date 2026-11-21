@@ -10,7 +10,8 @@ use std::sync::mpsc::{Receiver, TryRecvError};
 use eframe::egui::{self, Event, Key, Modifiers, ViewportCommand};
 use ferrosheet_core::{
     CellPos, CellStyle, CellValue, CopyFormat, EXTENSIONS, Lines, Loss, Query, Selection, Sheet,
-    StyleChange, Summary, TextFormat, copy_text, find_all, parse_reference, ref_text,
+    StyleChange, Summary, TextFormat, copy_text, find_all, is_name, parse_reference, ref_text,
+    resolve_name,
 };
 
 use editing::{After, Copied, Engine, Op};
@@ -126,6 +127,8 @@ struct Doc {
     removed: Vec<grid::Removed>,
     /// The cells last copied here, to paste them with formulas and formatting.
     copied: Option<Copied>,
+    /// Defined names (name and formula), for the name box.
+    defined: Vec<(String, String)>,
 }
 
 impl Doc {
@@ -321,6 +324,7 @@ impl App {
             removed: Vec::new(),
             dirty: false,
             copied: None,
+            defined: Vec::new(),
         });
         self.update_title(ctx);
         self.search.hits.clear();
@@ -361,7 +365,12 @@ impl App {
         let Some(doc) = &mut self.doc else { return };
         for msg in doc.loader.poll() {
             match msg {
-                LoadMsg::Opened { names, text_format } => {
+                LoadMsg::Opened {
+                    names,
+                    text_format,
+                    defined,
+                } => {
+                    doc.defined = defined;
                     doc.sheets = names.iter().map(|_| None).collect();
                     doc.source = (0..names.len()).map(Some).collect();
                     doc.names = names;
@@ -808,9 +817,27 @@ impl App {
         );
     }
 
-    /// Jumps to and selects what the name box holds; says why when it cannot.
-    fn go_to(&mut self, input: &str) {
-        let Some((sheet, first, last)) = parse_reference(input) else {
+    /// Jumps to and selects what the name box holds (a cell, range or defined name); a
+    /// new name names the selection. Says why when it cannot.
+    fn go_to(&mut self, ctx: &egui::Context, input: &str) {
+        let defined = self
+            .doc
+            .as_ref()
+            .map(|d| &d.defined[..])
+            .unwrap_or_default();
+        let found = parse_reference(input).or_else(|| resolve_name(defined, input));
+        let Some((sheet, first, last)) = found else {
+            let name = input.trim();
+            if is_name(name)
+                && let Some(doc) = &self.doc
+                && let Some(Some(v)) = doc.sheets.get(doc.active)
+            {
+                let (sheet, sel) = (doc.active, v.grid.selection);
+                let name = name.to_owned();
+                self.status = Some((text::name_defined(&name), ctx.input(|i| i.time)));
+                self.queue(ctx, Op::DefineName { name, sheet, sel });
+                return;
+            }
             self.status = Some((text::invalid_reference().into(), f64::NAN));
             return;
         };
@@ -1081,6 +1108,11 @@ impl App {
         let mut name_box = std::mem::take(&mut self.name_box);
         let name_focus = std::mem::take(&mut self.name_focus);
         let mut go_to = None;
+        let defined = self
+            .doc
+            .as_ref()
+            .map(|d| d.defined.clone())
+            .unwrap_or_default();
         egui::Panel::top("top").show(ui, |ui| {
             cmd = self.menu_bar(ui);
             self.format_bar(ui);
@@ -1115,6 +1147,18 @@ impl App {
                     }
                     if resp.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) {
                         go_to = Some(name_box.clone());
+                    }
+                    if !defined.is_empty() {
+                        ui.menu_button(text::names_menu(), |ui| {
+                            for (name, _) in &defined {
+                                if ui.button(name).clicked() {
+                                    go_to = Some(name.clone());
+                                    ui.close();
+                                }
+                            }
+                        })
+                        .response
+                        .on_hover_text(text::names_menu_hint());
                     }
                     ui.weak(text::formula_label());
                     let font = egui::TextStyle::Body.resolve(ui.style());
@@ -1162,7 +1206,7 @@ impl App {
         });
         self.name_box = name_box;
         if let Some(input) = go_to {
-            self.go_to(&input);
+            self.go_to(ui.ctx(), &input);
         }
         let ctx = ui.ctx().clone();
         if start_in_bar {
@@ -2913,7 +2957,7 @@ mod tests {
         assert_eq!(sel.cursor, CellPos::new(0, 0));
         assert_eq!(h.state().name_box, "A1:C10");
 
-        go_to(&mut h, "nonsense");
+        go_to(&mut h, "no sense");
         assert_eq!(status(&h).as_deref(), Some(text::invalid_reference()));
         go_to(&mut h, "Nowhere!A1");
         assert_eq!(status(&h), Some(text::unknown_sheet("Nowhere")));
@@ -2924,6 +2968,32 @@ mod tests {
         });
         h.run();
         assert_eq!(cursor(&mut h), CellPos::new(2, 1));
+    }
+
+    #[test]
+    fn a_new_name_in_the_name_box_names_the_selection_and_goes_there_later() {
+        let mut h = open(demo());
+        h.state_mut().active_view().unwrap().grid.selection = Selection {
+            anchor: CellPos::new(1, 3),
+            cursor: CellPos::new(4, 3),
+        };
+        go_to(&mut h, "Totals");
+        settle(&mut h, |app| {
+            app.doc.as_ref().is_some_and(|d| !d.defined.is_empty())
+        });
+        assert_eq!(status(&h), Some(text::name_defined("Totals")));
+        let defined = h.state().doc.as_ref().unwrap().defined.clone();
+        assert_eq!(defined[0].0, "Totals");
+
+        go_to(&mut h, "A1");
+        go_to(&mut h, "totals");
+        let sel = selection(&mut h);
+        assert_eq!(sel.bounds(), (CellPos::new(1, 3), CellPos::new(4, 3)));
+
+        // the names menu lists it
+        h.get_by_label(text::names_menu()).click();
+        h.run();
+        h.get_by_label("Totals");
     }
 
     #[test]

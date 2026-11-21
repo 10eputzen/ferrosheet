@@ -43,6 +43,12 @@ pub(super) enum Op {
         sheet: usize,
         sel: Selection,
     },
+    /// Names the cells `sel` on `sheet` (workbook-wide).
+    DefineName {
+        name: String,
+        sheet: usize,
+        sel: Selection,
+    },
     /// Inserts (`insert`) or deletes `count` rows or columns at `at`.
     Lines {
         sheet: usize,
@@ -409,6 +415,9 @@ impl App {
                     }
                     r
                 }
+                Op::DefineName { name, sheet, sel } => s
+                    .define_name(&name, sheet, &sel)
+                    .map(|()| doc.defined = s.defined_names()),
                 Op::Clear { sheet, sel } => s.clear(sheet, &sel),
                 Op::Style { sheet, sel, change } => s.set_style(sheet, &sel, change),
                 Op::Replace {
@@ -434,6 +443,10 @@ impl App {
                         s.redo()
                     };
                     stepped = s.take_stepped_lines().map(|c| (c, undo));
+                    // The step may have been a new name.
+                    if is_xlsx(&doc.path) || !s.defined_names().is_empty() {
+                        doc.defined = s.defined_names();
+                    }
                     Ok(())
                 }
                 Op::AddSheet => s.add_sheet(),

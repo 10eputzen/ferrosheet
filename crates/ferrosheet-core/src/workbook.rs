@@ -99,6 +99,20 @@ impl Workbook {
         })
     }
 
+    /// The file's defined names (workbook-wide ones; name and formula, without `=`),
+    /// leaving out Excel's internal ones (`_xlnm.…`, such as print areas).
+    pub fn defined_names(&self) -> Vec<(String, String)> {
+        match &self.inner {
+            Inner::Calamine(inner) => inner
+                .defined_names()
+                .iter()
+                .filter(|(n, _)| !n.starts_with("_xlnm."))
+                .cloned()
+                .collect(),
+            Inner::Text(..) => Vec::new(),
+        }
+    }
+
     /// How a `.csv`/`.tsv` file is written, `None` for spreadsheet formats.
     pub fn text_format(&self) -> Option<TextFormat> {
         match self.inner {

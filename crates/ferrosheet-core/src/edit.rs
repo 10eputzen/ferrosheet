@@ -259,6 +259,37 @@ impl EditSession {
         ws.get(sheet).map(|w| w.sheet_id)
     }
 
+    /// Workbook-wide defined names: name and formula (without `=`).
+    pub fn defined_names(&self) -> Vec<(String, String)> {
+        self.model
+            .get_defined_name_list()
+            .into_iter()
+            .filter(|(_, scope, _)| scope.is_none())
+            .map(|(name, _, formula)| (name, formula.trim_start_matches('=').to_owned()))
+            .collect()
+    }
+
+    /// Defines `name` (workbook-wide) for the cells `sel` on `sheet`. One undo step.
+    pub fn define_name(&mut self, name: &str, sheet: usize, sel: &Selection) -> Result<(), String> {
+        let sheet_name = self
+            .sheet_names()
+            .get(sheet)
+            .cloned()
+            .ok_or("no such sheet")?;
+        let (r0, c0, r1, c1) = bounds(sel);
+        let abs = |r: u32, c: u32| format!("${}${}", crate::column_name(c), r + 1);
+        let range = if (r0, c0) == (r1, c1) {
+            abs(r0, c0)
+        } else {
+            format!("{}:{}", abs(r0, c0), abs(r1, c1))
+        };
+        let formula = format!("'{}'!{range}", sheet_name.replace('\'', "''"));
+        self.model.is_valid_defined_name(name, None, &formula)?;
+        self.model.new_defined_name(name, None, &formula)?;
+        self.done(Step::Cells);
+        Ok(())
+    }
+
     /// Appends an empty sheet with a free name ("Sheet2", …).
     pub fn add_sheet(&mut self) -> Result<(), String> {
         self.model.new_sheet()?;
@@ -1063,6 +1094,26 @@ mod tests {
         assert_eq!(find(&s.updates(0), 5, 0).value, CellValue::Text("d".into()));
         // nothing on the clipboard: nothing happens
         assert_eq!(s.paste(0, &sel, "").unwrap(), sel);
+    }
+
+    #[test]
+    fn defining_a_name_makes_it_usable_and_undo_removes_it() {
+        let mut s = blank(Locale::Invariant);
+        s.set_input(0, 0, 0, "2").unwrap();
+        s.set_input(0, 1, 0, "3").unwrap();
+        s.define_name("Prices", 0, &range(1, 0, 0, 0)).unwrap();
+        assert_eq!(
+            s.defined_names(),
+            [("Prices".to_owned(), "S!$A$1:$A$2".to_owned())]
+        );
+        s.set_input(0, 0, 1, "=SUM(Prices)").unwrap();
+        assert_eq!(find(&s.updates(0), 0, 1).value, CellValue::Number(5.0));
+        // taken, or not a name
+        assert!(s.define_name("prices", 0, &range(0, 0, 0, 0)).is_err());
+        assert!(s.define_name("A1", 0, &range(0, 0, 0, 0)).is_err());
+        assert!(s.undo());
+        assert!(s.undo());
+        assert!(s.defined_names().is_empty());
     }
 
     #[test]

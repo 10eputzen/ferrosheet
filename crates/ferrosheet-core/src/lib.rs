@@ -14,7 +14,8 @@ mod workbook;
 pub use csv::{Encoding, TextFormat, write as write_csv};
 pub use edit::{CellUpdate, EditSession, LineChange, Lines, NumberFormat, StyleChange};
 pub use formula::{
-    FormulaRef, accepts_ref, find_refs, parse_reference, ref_slot, ref_text, splice,
+    FormulaRef, accepts_ref, find_refs, is_name, parse_reference, ref_slot, ref_text, resolve_name,
+    splice,
 };
 pub use losses::{Loss, save_losses};
 pub use search::{Query, find_all};
