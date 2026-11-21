@@ -36,6 +36,13 @@ pub(super) enum Op {
         sel: Selection,
         text: String,
     },
+    /// Pastes cells copied here (`from` on `from_sheet`) with formulas and formatting.
+    PasteCopied {
+        from_sheet: usize,
+        from: Selection,
+        sheet: usize,
+        sel: Selection,
+    },
     /// Inserts (`insert`) or deletes `count` rows or columns at `at`.
     Lines {
         sheet: usize,
@@ -65,6 +72,22 @@ pub(super) enum Op {
         path: PathBuf,
         then: Option<After>,
     },
+}
+
+/// Cells copied in this document and the text that went to the clipboard with them.
+pub(super) struct Copied {
+    pub(super) sheet: usize,
+    pub(super) sel: Selection,
+    pub(super) text: String,
+}
+
+impl Copied {
+    /// Whether `pasted` is still what this copy put on the clipboard (the system may
+    /// have changed the line breaks).
+    fn matches(&self, pasted: &str) -> bool {
+        let norm = |t: &str| t.replace("\r\n", "\n").trim_end_matches('\n').to_owned();
+        norm(&self.text) == norm(pasted)
+    }
 }
 
 /// What to do once unsaved changes are saved or discarded.
@@ -254,6 +277,13 @@ impl App {
         if !matches!(op, Op::Save { .. }) {
             doc.dirty = true;
         }
+        // Rows, columns or sheets move: the copied cells are no longer where they were.
+        if matches!(
+            op,
+            Op::Lines { .. } | Op::DeleteSheet { .. } | Op::Undo | Op::Redo
+        ) {
+            doc.copied = None;
+        }
         doc.pending.push_back(op);
         if matches!(doc.engine, Engine::Idle) {
             if is_xlsx(&doc.path) {
@@ -350,6 +380,18 @@ impl App {
                         v.grid.selection = pasted;
                     }
                 }),
+                Op::PasteCopied {
+                    from_sheet,
+                    from,
+                    sheet,
+                    sel,
+                } => s
+                    .paste_copied(from_sheet, &from, sheet, &sel)
+                    .map(|pasted| {
+                        if let Some(Some(v)) = doc.sheets.get_mut(sheet) {
+                            v.grid.selection = pasted;
+                        }
+                    }),
                 Op::Lines {
                     sheet,
                     lines,
@@ -719,7 +761,8 @@ impl App {
         self.active_view().is_some_and(|v| v.grid.edit.is_some())
     }
 
-    /// Ctrl+V: pastes tab-separated text at the selection.
+    /// Ctrl+V: pastes cells copied here with formulas and formatting, anything else as
+    /// tab-separated text, at the selection.
     pub(super) fn paste(&mut self, ctx: &egui::Context, text: String) {
         let Some(doc) = &self.doc else { return };
         let sheet = doc.active;
@@ -730,7 +773,16 @@ impl App {
             return;
         }
         let sel = v.grid.selection;
-        self.queue(ctx, Op::Paste { sheet, sel, text });
+        let op = match &doc.copied {
+            Some(c) if c.matches(&text) && c.sheet < doc.sheets.len() => Op::PasteCopied {
+                from_sheet: c.sheet,
+                from: c.sel,
+                sheet,
+                sel,
+            },
+            _ => Op::Paste { sheet, sel, text },
+        };
+        self.queue(ctx, op);
     }
 
     /// Inserts as many rows or columns as are selected, before or after the selection,

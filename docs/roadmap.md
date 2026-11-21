@@ -9,12 +9,10 @@ it can do compared with LibreOffice Calc is in the [feature parity](feature-pari
 Open work lives in the [issues](https://github.com/10eputzen/ferrosheet/issues). Roughly in
 this order:
 
-1. Close the gaps in editing: paste with formatting
-   ([#5](https://github.com/10eputzen/ferrosheet/issues/5)).
-2. Save an xlsx without losing comments, validation, filters, tables or charts
+1. Save an xlsx without losing comments, validation, filters, tables or charts
    ([#6](https://github.com/10eputzen/ferrosheet/issues/6)).
-3. Linux and macOS packages ([#7](https://github.com/10eputzen/ferrosheet/issues/7)).
-4. Named ranges ([#8](https://github.com/10eputzen/ferrosheet/issues/8)), print and PDF
+2. Linux and macOS packages ([#7](https://github.com/10eputzen/ferrosheet/issues/7)).
+3. Named ranges ([#8](https://github.com/10eputzen/ferrosheet/issues/8)), print and PDF
    ([#9](https://github.com/10eputzen/ferrosheet/issues/9)), auto-update settings
    ([#11](https://github.com/10eputzen/ferrosheet/issues/11)).
 

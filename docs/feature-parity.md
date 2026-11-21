@@ -45,7 +45,7 @@ Spreadsheet functions (SUM, VLOOKUP, …) have their own list: [function parity]
 | **Editing** | | |
 | Edit cells | ✅ | ✅ |
 | Undo, redo | ✅ | ✅ |
-| Paste | ✅ | ✅ tab-separated text from Excel, Sheets or ferrosheet (Ctrl+V, *Edit → Paste*); one value fills the selection; one undo step; values only, no formatting |
+| Paste | ✅ | ✅ tab-separated text from Excel, Sheets or ferrosheet (Ctrl+V, *Edit → Paste*); a block repeats over a selection that is a multiple of its size; one undo step; cells copied inside ferrosheet keep formatting and move relative references, text from other apps is pasted as values |
 | Insert and delete rows, columns, sheets | ✅ | ✅ right-click a row/column header or *Edit*; formulas follow. Undoing a delete brings the cells back, but formulas that pointed into them stay `#REF!` (engine limitation) |
 | Format cells: bold, italic, colour, number format | ✅ | ✅ shown for what is set in ferrosheet |
 | Format cells: fonts, borders, alignment, styles | ✅ | ❌ |
