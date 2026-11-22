@@ -149,10 +149,12 @@ texts! {
     replace_hint: "Ersetzt im Zellinhalt, auch in Formeln. Strg+Z macht es rückgängig.",
         "Replaces in the cell contents, formulas included. Ctrl+Z undoes it.";
     name_box: "Namenfeld", "Name box";
-    name_box_hint: "Zelle oder Bereich eingeben und Enter drücken, z. B. B200, Tabelle2!A1 oder A1:C10 (Strg+G)",
-        "Type a cell or range and press Enter, e.g. B200, Sheet2!A1 or A1:C10 (Ctrl+G)";
-    invalid_reference: "Kein gültiger Bezug – z. B. B200, Tabelle2!A1 oder A1:C10",
-        "Not a cell or range – try B200, Sheet2!A1 or A1:C10";
+    name_box_hint: "Zelle, Bereich oder Name eingeben und Enter drücken, z. B. B200, Tabelle2!A1 oder A1:C10 (Strg+G). Ein neuer Name benennt die Auswahl.",
+        "Type a cell, range or name and press Enter, e.g. B200, Sheet2!A1 or A1:C10 (Ctrl+G). A new name names the selection.";
+    invalid_reference: "Kein gültiger Bezug oder Name – z. B. B200, Tabelle2!A1, A1:C10 oder Preise",
+        "Not a cell, range or name – try B200, Sheet2!A1, A1:C10 or Prices";
+    names_menu: "Namen", "Names";
+    names_menu_hint: "Benannte Bereiche der Datei", "Named ranges in this file";
     autosum: "Σ", "Σ";
     autosum_hint: "AutoSumme (Alt+=): summiert die Zahlen darüber oder links davon",
         "AutoSum (Alt+=): adds up the numbers above or to the left";
@@ -308,6 +310,13 @@ pub fn replaced(cells: usize) -> String {
         (Lang::De, n) => format!("{n} Zellen ersetzt"),
         (Lang::En, 1) => "1 cell replaced".into(),
         (Lang::En, n) => format!("{n} cells replaced"),
+    }
+}
+
+pub fn name_defined(name: &str) -> String {
+    match lang() {
+        Lang::De => format!("Name „{name}“ festgelegt"),
+        Lang::En => format!("Name \"{name}\" defined"),
     }
 }
 

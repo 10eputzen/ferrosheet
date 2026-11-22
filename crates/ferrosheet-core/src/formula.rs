@@ -227,6 +227,45 @@ pub fn parse_reference(input: &str) -> Option<(Option<String>, CellPos, CellPos)
     }
 }
 
+/// The range a defined name (`names`: name and formula, as the file stores them)
+/// points to, if `input` is one of the names (case does not matter) and it points to
+/// a single cell or range. Same result as [`parse_reference`].
+pub fn resolve_name(
+    names: &[(String, String)],
+    input: &str,
+) -> Option<(Option<String>, CellPos, CellPos)> {
+    let input = input.trim();
+    let (_, formula) = names.iter().find(|(n, _)| n.eq_ignore_ascii_case(input))?;
+    parse_reference(formula.trim_start_matches('='))
+}
+
+/// Whether `input` can be a new name: starts with a letter, `_` or `\`, then letters,
+/// digits, `_` or `.`, and is no cell reference (`A1`, `R1C1`) or `TRUE`/`FALSE`.
+pub fn is_name(input: &str) -> bool {
+    let mut chars = input.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    let upper = input.to_ascii_uppercase();
+    (first.is_alphabetic() || first == '_' || first == '\\')
+        && chars.all(|c| c.is_alphanumeric() || c == '_' || c == '.')
+        && input.chars().count() <= 255
+        && parse_reference(input).is_none()
+        && !matches!(upper.as_str(), "TRUE" | "FALSE" | "R" | "C")
+        && !looks_like_r1c1(&upper)
+}
+
+fn looks_like_r1c1(s: &str) -> bool {
+    let Some(rest) = s.strip_prefix('R') else {
+        return false;
+    };
+    let digits = rest.trim_start_matches(|c: char| c.is_ascii_digit());
+    digits.is_empty()
+        || digits
+            .strip_prefix('C')
+            .is_some_and(|d| d.chars().all(|c| c.is_ascii_digit()))
+}
+
 /// `A1` for one cell, `A1:B5` for a range (any two corners).
 pub fn ref_text(a: CellPos, b: CellPos) -> String {
     let (tl, br) = (
@@ -264,6 +303,39 @@ mod tests {
             .iter()
             .map(|r| (cs[r.start..r.end].iter().collect(), r.color))
             .collect()
+    }
+
+    #[test]
+    fn resolves_defined_names() {
+        let names = vec![
+            ("Prices".to_owned(), "Sheet1!$B$2:$B$10".to_owned()),
+            ("Rate".to_owned(), "='My sheet'!$A$1".to_owned()),
+            ("Total".to_owned(), "SUM(Sheet1!$B$2:$B$10)".to_owned()),
+        ];
+        assert_eq!(
+            resolve_name(&names, " prices "),
+            Some((Some("Sheet1".into()), p(1, 1), p(9, 1)))
+        );
+        assert_eq!(
+            resolve_name(&names, "RATE"),
+            Some((Some("My sheet".into()), p(0, 0), p(0, 0)))
+        );
+        assert_eq!(resolve_name(&names, "Total"), None);
+        assert_eq!(resolve_name(&names, "Other"), None);
+    }
+
+    #[test]
+    fn tells_names_from_references() {
+        for ok in [
+            "Prices", "_tmp", "tax.rate", "Q1_2026", "Größe", "RC_x", "AB",
+        ] {
+            assert!(is_name(ok), "{ok}");
+        }
+        for bad in [
+            "", "A1", "b200", "XFD1", "R1C1", "R2", "r", "C", "TRUE", "1st", "a b", "a-b", "A1:B2",
+        ] {
+            assert!(!is_name(bad), "{bad}");
+        }
     }
 
     #[test]

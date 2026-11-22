@@ -37,7 +37,7 @@ Spreadsheet functions (SUM, VLOOKUP, …) have their own list: [function parity]
 | Search, current or all sheets, match case | ✅ | ✅ |
 | Search with regex | ✅ | ✅ toggle next to "All sheets", invalid pattern shows a hint |
 | Replace | ✅ | ✅ Ctrl+H or *Edit → Replace…*: one match or all at once (one undo step, says how many cells), also inside formulas; regex groups with `$1` |
-| Name box, go to a cell or range (`B200`, `Sheet2!A1`, `A1:C10`) | ✅ | ✅ Ctrl+G or F5; named ranges ❌ |
+| Name box, go to a cell or range (`B200`, `Sheet2!A1`, `A1:C10`) | ✅ | ✅ Ctrl+G or F5; also defined names, listed under *Names* next to the box |
 | Select cells, rows, columns, all | ✅ | ✅ |
 | Copy as tab-separated text (pastes into Excel, Sheets, mail) | ✅ | ✅ plus raw values with Ctrl+Shift+C |
 | Sort and filter | ✅ | ❌ (maybe later, view-only) |
@@ -59,7 +59,7 @@ Spreadsheet functions (SUM, VLOOKUP, …) have their own list: [function parity]
 | Recalculate | ✅ | ✅ via IronCalc once editing starts, see [function parity](feature-parity-functions.md); before that the results stored in the file |
 | Enter formulas | ✅ | ✅ in English (`=SUM(A1:A3)`) |
 | Pick references by clicking or dragging while typing a formula, coloured references | ✅ | ✅ in the cell and the formula bar |
-| Named ranges | ✅ | ❌ |
+| Named ranges | ✅ | ✅ go to them from the name box; typing a new name names the selection (workbook-wide); used in formulas; kept when saving xlsx. No dialog to rename or delete yet |
 | Goal seek, solver, scenarios, what-if tables | ✅ | ❌ |
 | Pivot tables | ✅ | ❌ |
 | Conditional formatting | ✅ | ❌ |

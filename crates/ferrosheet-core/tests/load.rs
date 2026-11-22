@@ -186,3 +186,24 @@ fn csv_opens_as_one_sheet_named_after_the_file() {
     assert!(s.value(1, 1).is_numeric());
     assert!(wb.load_formulas(0).unwrap().is_empty());
 }
+
+#[test]
+fn lists_defined_names_without_internal_ones() {
+    let path = xlsx("names.xlsx", |wb| {
+        let ws = wb.add_worksheet();
+        ws.write(0, 0, 1).unwrap();
+        ws.autofilter(0, 0, 3, 0).unwrap();
+        wb.define_name("Prices", "=Sheet1!$A$1:$A$4").unwrap();
+    });
+    let wb = Workbook::open(&path, Locale::Invariant).unwrap();
+    let names = wb.defined_names();
+    assert_eq!(names.len(), 1, "{names:?}");
+    assert_eq!(names[0].0, "Prices");
+    assert_eq!(
+        ferrosheet_core::resolve_name(&names, "prices").map(|r| (r.1, r.2)),
+        Some((
+            ferrosheet_core::CellPos::new(0, 0),
+            ferrosheet_core::CellPos::new(3, 0)
+        ))
+    );
+}

@@ -14,6 +14,8 @@ pub enum LoadMsg {
         names: Vec<String>,
         /// How a text file (csv, tsv) was written, so saving can write it the same way.
         text_format: Option<TextFormat>,
+        /// Defined names: name and formula.
+        defined: Vec<(String, String)>,
     },
     Sheet {
         idx: usize,
@@ -59,6 +61,7 @@ impl Loader {
             send(LoadMsg::Opened {
                 names: wb.sheet_names.clone(),
                 text_format: wb.text_format(),
+                defined: wb.defined_names(),
             });
             let mut loaded = vec![false; wb.sheet_names.len()];
             for idx in std::iter::once(0).chain(req_rx.iter()) {
