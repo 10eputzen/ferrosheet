@@ -30,6 +30,9 @@ question was: why not port that small piece to Rust?
 - Select cells, rows, columns or everything; copy as tab-separated text that pastes into
   Excel, Google Sheets or an email, and paste such text back in (Ctrl+V). Cells copied
   inside ferrosheet keep their formatting, and relative references in formulas move along
+- Drag the small square at the corner of the selection to continue it: series such as
+  1, 2, 3 · Item 1, Item 2 · Mon, Tue · Jan, Feb go on, other cells are repeated and
+  formulas move along. Ctrl+D and Ctrl+R copy the first row or column over the selection
 - Insert and delete rows and columns; formulas follow the cells they refer to
 - Edit cells and formulas with recalculation ([IronCalc](https://github.com/ironcalc/IronCalc)),
   undo and redo, bold, italic, text and fill colour, number formats
@@ -111,9 +114,11 @@ cargo install --path crates/ferrosheet
 | Ctrl+Page Up / Page Down | Previous / next sheet |
 | Ctrl+X | Cut (copy, then empty the cells) |
 | Ctrl+V | Paste at the selection; a block repeats over a selection that is a multiple of its size |
+| Ctrl+D, Ctrl+R | Fill down, fill right (copy the first row or column; a single row or column takes the one before it) |
 | Ctrl+Plus, Ctrl+Minus, Ctrl+0, Ctrl+wheel | Zoom the grid in, out, back to 100 % |
 
-Mouse: click a column or row header to select it, drag a header edge to resize,
+Mouse: drag the fill handle (the square at the bottom-right of the selection) to fill a series,
+click a column or row header to select it, drag a header edge to resize,
 double-click an edge to fit. Right-click cells or headers for the usual menu; the headers
 also insert and delete rows and columns.
 Sheet tabs: "+" adds a sheet, double-click renames, right-click renames or deletes.

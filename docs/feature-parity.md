@@ -50,7 +50,7 @@ Spreadsheet functions (SUM, VLOOKUP, …) have their own list: [function parity]
 | Format cells: bold, italic, colour, number format | ✅ | ✅ shown for what is set in ferrosheet |
 | Format cells: fonts, borders, alignment, styles | ✅ | ❌ |
 | Merge cells | ✅ | ❌ |
-| Autofill (drag a series) | ✅ | ❌ |
+| Autofill (drag a series) | ✅ | ✅ drag the fill handle: numbers, numbered text, weekdays and months continue, formulas move along; Ctrl+D / Ctrl+R fill down and right |
 | AutoSum (Σ, Alt+=), today's date (Ctrl+;) | ✅ | ✅ the range can be changed by clicking cells before Enter; on German keyboards also Ctrl+. |
 | Data validation, drop-down lists | ✅ | ❌ |
 | Cell and sheet protection | ✅ | ❌ |

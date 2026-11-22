@@ -43,6 +43,8 @@ enum Cmd {
     /// Asks the system for the clipboard; it arrives as a paste event.
     Paste,
     Clear,
+    FillDown,
+    FillRight,
     /// Insert rows (below: after the selection) or columns (right: after it).
     InsertRows(bool),
     InsertCols(bool),
@@ -485,6 +487,8 @@ impl App {
             Cmd::Copy(f) => self.copy(ctx, f),
             Cmd::Paste => ctx.send_viewport_cmd(ViewportCommand::RequestPaste),
             Cmd::Clear => self.clear_selection(ctx),
+            Cmd::FillDown => self.fill_copy(ctx, Lines::Rows),
+            Cmd::FillRight => self.fill_copy(ctx, Lines::Cols),
             Cmd::InsertRows(below) => self.lines(ctx, Lines::Rows, true, below),
             Cmd::InsertCols(right) => self.lines(ctx, Lines::Cols, true, right),
             Cmd::DeleteRows => self.lines(ctx, Lines::Rows, false, false),
@@ -962,6 +966,8 @@ impl App {
                 Key::F2 => self.start_edit(None),
                 Key::Enter if !m.shift && self.active_view().is_some() => self.start_edit(None),
                 Key::Delete => self.clear_selection(ctx),
+                Key::D if ctrl => self.fill_copy(ctx, Lines::Rows),
+                Key::R if ctrl => self.fill_copy(ctx, Lines::Cols),
                 _ => self.navigate(key, m),
             }
         }
@@ -1707,6 +1713,9 @@ impl eframe::App for App {
             },
         });
         if let Some(out) = &grid_out {
+            if let Some((src, fill)) = out.fill {
+                self.fill(&ctx, src, fill);
+            }
             if out.edit_left {
                 self.commit_edit(&ctx, None);
             } else if out.double_clicked && !self.editing_cell() {
@@ -1752,6 +1761,8 @@ fn edit_items(ui: &mut egui::Ui, cmd: &mut Option<Cmd>, on: bool) {
     let raw = Cmd::Copy(CopyFormat::Invariant);
     item(ui, cmd, text::copy_raw(), "Ctrl+Shift+C", on, raw);
     item(ui, cmd, text::paste(), "Ctrl+V", on, Cmd::Paste);
+    item(ui, cmd, text::fill_down(), "Ctrl+D", on, Cmd::FillDown);
+    item(ui, cmd, text::fill_right(), "Ctrl+R", on, Cmd::FillRight);
     item(ui, cmd, text::clear_contents(), "Del", on, Cmd::Clear);
 }
 
@@ -3044,5 +3055,61 @@ mod tests {
                 CellValue::DateTime(_)
             )
         });
+    }
+
+    fn drag_points(h: &mut Harness<'_, App>, a: egui::Pos2, b: egui::Pos2) {
+        h.hover_at(a);
+        h.run();
+        h.drag_at(a);
+        h.run();
+        for i in 1..=5 {
+            h.hover_at(a + (b - a) * (i as f32 / 5.0));
+            h.run();
+        }
+        h.drop_at(b);
+        h.step();
+    }
+
+    #[test]
+    fn dragging_the_fill_handle_continues_a_series() {
+        let mut h = open(demo());
+        select(&mut h, 10, 0);
+        h.event(Event::Paste("1\n3\n".into()));
+        settle(&mut h, |app| {
+            app.active_view().unwrap().sheet.value(11, 0) == &CellValue::Number(3.0)
+        });
+        let handle = h.state_mut().active_view().unwrap().grid.fill_handle();
+        let target = at(&mut h, 13, 0);
+        drag_points(&mut h, handle, target);
+        settle(&mut h, |app| {
+            app.active_view().unwrap().sheet.value(13, 0) == &CellValue::Number(7.0)
+        });
+        assert_eq!(value(&mut h, 12, 0), CellValue::Number(5.0));
+        assert_eq!(
+            selection(&mut h).bounds(),
+            (CellPos::new(10, 0), CellPos::new(13, 0))
+        );
+        // one undo takes the whole fill back
+        h.key_press_modifiers(Modifiers::COMMAND, Key::Z);
+        settle(&mut h, |app| {
+            app.active_view().unwrap().sheet.value(13, 0) == &CellValue::Empty
+        });
+        assert_eq!(value(&mut h, 11, 0), CellValue::Number(3.0));
+    }
+
+    #[test]
+    fn ctrl_d_copies_the_formula_above_down_the_selection() {
+        let mut h = open(demo());
+        let d2 = formula(&mut h, 1, 3);
+        assert_eq!(d2.as_deref(), Some("=B2*C2*(1-G2)"));
+        h.state_mut().active_view().unwrap().grid.selection = Selection {
+            anchor: CellPos::new(1, 3),
+            cursor: CellPos::new(12, 3),
+        };
+        h.key_press_modifiers(Modifiers::COMMAND, Key::D);
+        settle(&mut h, |app| {
+            app.active_view().unwrap().formulas.contains_key(&(12, 3))
+        });
+        assert_eq!(formula(&mut h, 12, 3).as_deref(), Some("=B13*C13*(1-G13)"));
     }
 }

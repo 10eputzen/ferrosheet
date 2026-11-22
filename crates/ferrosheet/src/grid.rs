@@ -6,7 +6,7 @@ use eframe::egui::{
     Stroke, UiBuilder, Vec2, pos2, vec2,
 };
 use ferrosheet_core::{
-    CellPos, CellStyle, CellValue, Lines, Selection, Sheet, column_name, find_refs, ref_slot,
+    CellPos, CellStyle, CellValue, Fill, Lines, Selection, Sheet, column_name, find_refs, ref_slot,
     ref_text, splice,
 };
 
@@ -29,6 +29,8 @@ const RESIZE_GRAB: f32 = 4.0;
 const MAX_AUTOFIT_H: f32 = 400.0;
 /// Top padding for text in rows taller than the default.
 const TEXT_TOP: f32 = 3.0;
+/// Size of the fill handle at the bottom-right corner of the selection.
+const HANDLE: f32 = 7.0;
 
 /// Per-sheet view state.
 #[derive(Default)]
@@ -48,6 +50,9 @@ pub struct GridState {
     /// Screen position of the top-left corner of A1 in the last frame.
     origin: Pos2,
     resizing: Option<Resize>,
+    /// The fill handle is being dragged: the selection it started from and where the
+    /// pointer would extend it to.
+    filling: Option<(Selection, Option<Fill>)>,
     /// Zoom the widths and heights are stored at (0 = not drawn yet, i.e. 100 %).
     zoom: f32,
 }
@@ -218,6 +223,8 @@ pub struct GridOut {
     pub body: Option<Response>,
     pub col_hdr: Option<Response>,
     pub row_hdr: Option<Response>,
+    /// The fill handle was let go: continue the selection (the source) as far as this.
+    pub fill: Option<(Selection, Fill)>,
 }
 
 /// Header edge being dragged.
@@ -235,6 +242,16 @@ impl GridState {
         let w = self.col_widths[cell.col as usize];
         let rh = &self.row_heights;
         self.origin + vec2(x + w / 2.0, rh.top(cell.row) + rh.height(cell.row) / 2.0)
+    }
+
+    /// The fill handle on screen (bottom-right corner of the selection), as of the last
+    /// frame (for UI tests).
+    #[cfg(test)]
+    pub fn fill_handle(&self) -> Pos2 {
+        let (_, br) = self.selection.bounds();
+        let x: f32 = self.col_widths[..=br.col as usize].iter().sum();
+        let rh = &self.row_heights;
+        self.origin + vec2(x, rh.top(br.row) + rh.height(br.row))
     }
 
     pub fn visible_rows(&self) -> i64 {
@@ -528,6 +545,25 @@ pub fn show(
                     );
                 }
 
+                // fill handle, and the frame of where a drag on it extends the selection
+                let handle = Rect::from_center_size(sel.right_bottom(), Vec2::splat(HANDLE * zoom));
+                if st.edit.is_none() {
+                    if let Some((src, Some(fill))) = &st.filling {
+                        let (a, b) = fill.covering(src).bounds();
+                        let frame = cell_rect(a.row.min(rows - 1), a.col.min(cols - 1))
+                            .union(cell_rect(b.row.min(rows - 1), b.col.min(cols - 1)));
+                        let stroke = Stroke::new(1.5, visuals.selection.bg_fill);
+                        dashed_rect(&painter, frame, stroke);
+                    }
+                    painter.rect_filled(handle, 0.0, visuals.selection.bg_fill);
+                    painter.rect_stroke(
+                        handle,
+                        0.0,
+                        Stroke::new(1.0, pal.cell_bg),
+                        egui::StrokeKind::Outside,
+                    );
+                }
+
                 // references of the formula being typed, framed in their colours
                 if let Some(e) = &st.edit
                     && e.text.starts_with('=')
@@ -625,6 +661,41 @@ pub fn show(
                     }
                 }
 
+                // Fill handle: a drag from it continues the selection (series or copies).
+                let grab = handle.expand(2.0);
+                let on_handle = |p: Pos2| grab.contains(p);
+                if st.edit.is_none()
+                    && st.filling.is_none()
+                    && resp.hovered()
+                    && ui.input(|i| i.pointer.hover_pos()).is_some_and(on_handle)
+                {
+                    ui.ctx().set_cursor_icon(CursorIcon::Crosshair);
+                }
+                if st.edit.is_none()
+                    && !secondary
+                    && st.filling.is_none()
+                    && ui.input(|i| i.pointer.primary_pressed())
+                    && resp.is_pointer_button_down_on()
+                    && ui
+                        .input(|i| i.pointer.press_origin())
+                        .is_some_and(on_handle)
+                {
+                    st.filling = Some((st.selection, None));
+                }
+                let filling = st.filling.is_some();
+                if let Some((src, target)) = &mut st.filling {
+                    ui.ctx().set_cursor_icon(CursorIcon::Crosshair);
+                    if let Some(p) = ui.input(|i| i.pointer.interact_pos()) {
+                        let cell = cell_at(p - origin, &xs, rh, rows, cols);
+                        *target = Fill::target(src, cell);
+                        st.scroll_to = Some(cell);
+                    }
+                    if !ui.input(|i| i.pointer.primary_down()) {
+                        grid_out.fill = target.map(|f| (*src, f));
+                        st.filling = None;
+                    }
+                }
+
                 // Point mode: while a formula is typed and the cursor sits where a
                 // reference may go, a click or drag on cells writes their reference
                 // into it instead of selecting them. The editor keeps the focus.
@@ -656,6 +727,7 @@ pub fn show(
 
                 // mouse selection
                 if !pointed
+                    && !filling
                     && !secondary
                     && resp.is_pointer_button_down_on()
                     && let Some(p) = ui.input(|i| i.pointer.interact_pos())
@@ -937,6 +1009,21 @@ fn cell_text(
         painter.galley(at + vec2(0.6, 0.0), galley.clone(), color);
     }
     painter.galley(at, galley, color);
+}
+
+/// A rectangle outlined with dashes, like the frame Excel shows while filling.
+fn dashed_rect(painter: &Painter, rect: Rect, stroke: Stroke) {
+    let (dash, gap) = (4.0, 3.0);
+    let corners = [
+        rect.left_top(),
+        rect.right_top(),
+        rect.right_bottom(),
+        rect.left_bottom(),
+        rect.left_top(),
+    ];
+    for w in corners.windows(2) {
+        painter.extend(egui::Shape::dashed_line(&[w[0], w[1]], stroke, dash, gap));
+    }
 }
 
 /// Click or drag on a header strip selects whole columns or rows.
