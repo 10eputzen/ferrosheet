@@ -33,6 +33,9 @@ question was: why not port that small piece to Rust?
 - Drag the small square at the corner of the selection to continue it: series such as
   1, 2, 3 · Item 1, Item 2 · Mon, Tue · Jan, Feb go on, other cells are repeated and
   formulas move along. Ctrl+D and Ctrl+R copy the first row or column over the selection
+- Sort by a column, ascending or descending (*Data* menu or right-click): one cell sorts
+  the whole block around it and keeps a header row on top; rows move as a whole with
+  their formatting and formulas
 - Insert and delete rows and columns; formulas follow the cells they refer to
 - Edit cells and formulas with recalculation ([IronCalc](https://github.com/ironcalc/IronCalc)),
   undo and redo, bold, italic, text and fill colour, number formats
@@ -122,7 +125,7 @@ click a column or row header to select it, drag a header edge to resize,
 double-click an edge to fit. Right-click cells or headers for the usual menu; the headers
 also insert and delete rows and columns.
 Sheet tabs: "+" adds a sheet, double-click renames, right-click renames or deletes.
-Everything is also in the menu bar (File, Edit, View, Format).
+Everything is also in the menu bar (File, Edit, View, Format, Data).
 
 ## How it is built
 

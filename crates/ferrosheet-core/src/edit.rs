@@ -17,6 +17,7 @@ use crate::{CellError, CellPos, CellStyle, CellValue, Locale, Query, Selection, 
 
 mod fill;
 mod paste;
+mod sort;
 
 pub use fill::Fill;
 

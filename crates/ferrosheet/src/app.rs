@@ -45,6 +45,8 @@ enum Cmd {
     Clear,
     FillDown,
     FillRight,
+    /// Sort the selection by the cursor's column (`true`: descending).
+    Sort(bool),
     /// Insert rows (below: after the selection) or columns (right: after it).
     InsertRows(bool),
     InsertCols(bool),
@@ -489,6 +491,7 @@ impl App {
             Cmd::Clear => self.clear_selection(ctx),
             Cmd::FillDown => self.fill_copy(ctx, Lines::Rows),
             Cmd::FillRight => self.fill_copy(ctx, Lines::Cols),
+            Cmd::Sort(descending) => self.sort(ctx, descending),
             Cmd::InsertRows(below) => self.lines(ctx, Lines::Rows, true, below),
             Cmd::InsertCols(right) => self.lines(ctx, Lines::Cols, true, right),
             Cmd::DeleteRows => self.lines(ctx, Lines::Rows, false, false),
@@ -1099,6 +1102,9 @@ impl App {
             ui.add_enabled_ui(view, |ui| {
                 ui.menu_button(text::menu_format(), |ui| format_items(ui, &mut cmd, st));
             });
+            ui.add_enabled_ui(view, |ui| {
+                ui.menu_button(text::menu_data(), |ui| data_items(ui, &mut cmd, true));
+            });
             ui.menu_button(text::menu_help(), |ui| {
                 item(ui, &mut cmd, text::about(), "", true, Cmd::About);
             });
@@ -1393,6 +1399,8 @@ impl App {
         if let Some(r) = &out.body {
             r.context_menu(|ui| {
                 edit_items(ui, &mut cmd, true);
+                ui.separator();
+                data_items(ui, &mut cmd, true);
                 ui.separator();
                 format_items(ui, &mut cmd, st);
             });
@@ -1792,6 +1800,11 @@ fn col_items(ui: &mut egui::Ui, cmd: &mut Option<Cmd>, on: bool) {
         Cmd::InsertCols(true),
     );
     item(ui, cmd, text::delete_cols(), "", on, Cmd::DeleteCols);
+}
+
+fn data_items(ui: &mut egui::Ui, cmd: &mut Option<Cmd>, on: bool) {
+    item(ui, cmd, text::sort_ascending(), "", on, Cmd::Sort(false));
+    item(ui, cmd, text::sort_descending(), "", on, Cmd::Sort(true));
 }
 
 fn format_items(ui: &mut egui::Ui, cmd: &mut Option<Cmd>, st: CellStyle) {
@@ -3111,5 +3124,36 @@ mod tests {
             app.active_view().unwrap().formulas.contains_key(&(12, 3))
         });
         assert_eq!(formula(&mut h, 12, 3).as_deref(), Some("=B13*C13*(1-G13)"));
+    }
+
+    #[test]
+    fn the_data_menu_sorts_the_block_around_the_cursor_and_keeps_the_header() {
+        let mut h = open(demo());
+        // demo: header in row 1, four items below, quantities in column B
+        let names = |h: &mut Harness<'_, App>| -> Vec<String> {
+            let v = h.state_mut().active_view().unwrap();
+            (1..5).map(|r| v.sheet.display(r, 0).into_owned()).collect()
+        };
+        let before = names(&mut h);
+        select(&mut h, 2, 1);
+        h.get_by_label("Data").click();
+        h.run();
+        h.get_by_label(text::sort_ascending()).click();
+        settle(&mut h, |app| {
+            app.active_view().unwrap().sheet.value(1, 1) == &CellValue::Number(1.0)
+        });
+        assert_eq!(value(&mut h, 0, 0), CellValue::Text("Item".into()));
+        let qty: Vec<f64> = (1..5).map(|r| number(&mut h, r, 1)).collect();
+        assert_eq!(qty, [1.0, 3.0, 15.0, 120.0]);
+        // totals follow their rows
+        assert_eq!(formula(&mut h, 1, 3).as_deref(), Some("=B2*C2*(1-G2)"));
+        assert_eq!(number(&mut h, 1, 3), 180.0);
+        assert!(status(&h).is_some_and(|s| s.contains("header row kept")));
+
+        h.key_press_modifiers(Modifiers::COMMAND, Key::Z);
+        settle(&mut h, |app| {
+            app.active_view().unwrap().sheet.value(1, 1) == &CellValue::Number(120.0)
+        });
+        assert_eq!(names(&mut h), before);
     }
 }
