@@ -130,6 +130,8 @@ texts! {
     copy_raw: "Rohwerte kopieren", "Copy raw values";
     clear_contents: "Inhalte löschen", "Clear contents";
     paste: "Einfügen", "Paste";
+    fill_down: "Nach unten ausfüllen", "Fill down";
+    fill_right: "Nach rechts ausfüllen", "Fill right";
     insert_rows_above: "Zeilen oberhalb einfügen", "Insert rows above";
     insert_rows_below: "Zeilen unterhalb einfügen", "Insert rows below";
     insert_cols_left: "Spalten links einfügen", "Insert columns left";

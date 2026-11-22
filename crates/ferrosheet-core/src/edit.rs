@@ -15,7 +15,10 @@ use ironcalc::base::{Model, UserModel};
 
 use crate::{CellError, CellPos, CellStyle, CellValue, Locale, Query, Selection, Sheet, find_refs};
 
+mod fill;
 mod paste;
+
+pub use fill::Fill;
 
 /// Number formats offered in the format bar.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

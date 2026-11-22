@@ -8,8 +8,8 @@ use std::sync::mpsc::{Receiver, TryRecvError, channel};
 
 use eframe::egui::{self, Color32, ViewportCommand};
 use ferrosheet_core::{
-    CellPos, EditSession, Lines, NumberFormat, Query, Selection, Sheet, StyleChange, ref_text,
-    save_losses, splice, write_csv,
+    CellPos, EditSession, Fill, Lines, NumberFormat, Query, Selection, Sheet, StyleChange,
+    ref_text, save_losses, splice, write_csv,
 };
 
 use super::{App, Doc, SheetView};
@@ -42,6 +42,18 @@ pub(super) enum Op {
         from: Selection,
         sheet: usize,
         sel: Selection,
+    },
+    /// The fill handle of `src` was dragged: continue it as `fill` says.
+    Fill {
+        sheet: usize,
+        src: Selection,
+        fill: Fill,
+    },
+    /// Fill down (rows) or right (columns): copy the first line over the selection.
+    FillCopy {
+        sheet: usize,
+        sel: Selection,
+        lines: Lines,
     },
     /// Names the cells `sel` on `sheet` (workbook-wide).
     DefineName {
@@ -398,6 +410,12 @@ impl App {
                             v.grid.selection = pasted;
                         }
                     }),
+                Op::Fill { sheet, src, fill } => s.fill(sheet, &src, fill).map(|covered| {
+                    if let Some(Some(v)) = doc.sheets.get_mut(sheet) {
+                        v.grid.selection = covered;
+                    }
+                }),
+                Op::FillCopy { sheet, sel, lines } => s.fill_copy(sheet, &sel, lines).map(|_| ()),
                 Op::Lines {
                     sheet,
                     lines,
@@ -820,6 +838,24 @@ impl App {
             count: last - first + 1,
         };
         self.queue(ctx, op);
+    }
+
+    /// Ctrl+D / Ctrl+R: copies the first row or column of the selection over the rest.
+    pub(super) fn fill_copy(&mut self, ctx: &egui::Context, lines: Lines) {
+        let Some(doc) = &self.doc else { return };
+        let sheet = doc.active;
+        let Some(Some(v)) = doc.sheets.get(sheet) else {
+            return;
+        };
+        let sel = v.grid.selection;
+        self.queue(ctx, Op::FillCopy { sheet, sel, lines });
+    }
+
+    /// The fill handle was let go over another cell.
+    pub(super) fn fill(&mut self, ctx: &egui::Context, src: Selection, fill: Fill) {
+        let Some(doc) = &self.doc else { return };
+        let sheet = doc.active;
+        self.queue(ctx, Op::Fill { sheet, src, fill });
     }
 
     /// Delete: empties the selected cells.

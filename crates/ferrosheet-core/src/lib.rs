@@ -12,7 +12,7 @@ mod value;
 mod workbook;
 
 pub use csv::{Encoding, TextFormat, write as write_csv};
-pub use edit::{CellUpdate, EditSession, LineChange, Lines, NumberFormat, StyleChange};
+pub use edit::{CellUpdate, EditSession, Fill, LineChange, Lines, NumberFormat, StyleChange};
 pub use formula::{
     FormulaRef, accepts_ref, find_refs, is_name, parse_reference, ref_slot, ref_text, resolve_name,
     splice,
