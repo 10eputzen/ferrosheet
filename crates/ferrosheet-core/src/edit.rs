@@ -15,6 +15,8 @@ use ironcalc::base::{Model, UserModel};
 
 use crate::{CellError, CellPos, CellStyle, CellValue, Locale, Query, Selection, Sheet, find_refs};
 
+mod paste;
+
 /// Number formats offered in the format bar.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NumberFormat {
@@ -407,8 +409,9 @@ impl EditSession {
     }
 
     /// Pastes tab-separated text (as Excel, Sheets and ferrosheet copy it) at the top
-    /// left of `sel`, each value read like typed input. A single value fills the whole
-    /// selection. One undo step. Returns the cells that were pasted into.
+    /// left of `sel`, each value read like typed input. A block is repeated over a
+    /// selection that is a multiple of its size (a single value fills any selection).
+    /// One undo step. Returns the cells that were pasted into.
     pub fn paste(
         &mut self,
         sheet: usize,
@@ -421,10 +424,25 @@ impl EditSession {
             return Ok(*sel);
         }
         let (r0, c0, r1, c1) = bounds(sel);
-        if rows.len() == 1 && width == 1 {
-            let v = rows[0][0].clone();
-            width = (c1 - c0 + 1) as usize;
-            rows = vec![vec![v; width]; (r1 - r0 + 1) as usize];
+        // A block over a selection that is a multiple of it is repeated to fill it
+        // (a single value fills any selection).
+        let (down, across) = paste::tiles(
+            (rows.len() as u32, width as u32),
+            (r1 - r0 + 1, c1 - c0 + 1),
+        );
+        if down > 1 || across > 1 {
+            for row in &mut rows {
+                row.resize(width, String::new());
+                *row = row
+                    .iter()
+                    .cycle()
+                    .take(width * across as usize)
+                    .cloned()
+                    .collect();
+            }
+            let h = rows.len();
+            rows = rows.into_iter().cycle().take(h * down as usize).collect();
+            width *= across as usize;
         }
         // IronCalc expects a rectangle; a short row clears the rest of it anyway.
         let mut out = ::csv::WriterBuilder::new()
@@ -1045,6 +1063,32 @@ mod tests {
         assert_eq!(find(&s.updates(0), 5, 0).value, CellValue::Text("d".into()));
         // nothing on the clipboard: nothing happens
         assert_eq!(s.paste(0, &sel, "").unwrap(), sel);
+    }
+
+    #[test]
+    fn pasted_text_tiles_a_selection_that_is_a_multiple_of_it() {
+        let mut s = blank(Locale::Invariant);
+        let sel = range(0, 0, 3, 3);
+        assert_eq!(s.paste(0, &sel, "1\t2\n3\n").unwrap(), sel);
+        let u = s.updates(0);
+        for (r, c, v) in [
+            (0, 0, 1.0),
+            (0, 3, 2.0),
+            (2, 2, 1.0),
+            (3, 0, 3.0),
+            (3, 2, 3.0),
+        ] {
+            assert_eq!(find(&u, r, c).value, CellValue::Number(v), "{r},{c}");
+        }
+        assert_eq!(find(&u, 1, 1).value, CellValue::Empty);
+        // not a multiple: the block lands once
+        assert_eq!(
+            s.paste(0, &range(6, 0, 8, 0), "a\nb").unwrap(),
+            range(6, 0, 7, 0)
+        );
+        assert!(s.undo());
+        assert!(s.undo());
+        assert_eq!(find(&s.updates(0), 3, 2).value, CellValue::Empty);
     }
 
     #[test]

@@ -28,7 +28,8 @@ question was: why not port that small piece to Rust?
   result in the cell and the formula itself in the formula bar
 - Search across the current sheet or all sheets, as plain text or regular expression
 - Select cells, rows, columns or everything; copy as tab-separated text that pastes into
-  Excel, Google Sheets or an email, and paste such text back in (Ctrl+V)
+  Excel, Google Sheets or an email, and paste such text back in (Ctrl+V). Cells copied
+  inside ferrosheet keep their formatting, and relative references in formulas move along
 - Insert and delete rows and columns; formulas follow the cells they refer to
 - Edit cells and formulas with recalculation ([IronCalc](https://github.com/ironcalc/IronCalc)),
   undo and redo, bold, italic, text and fill colour, number formats
@@ -109,7 +110,7 @@ cargo install --path crates/ferrosheet
 | Ctrl+F, F3, Shift+F3, Esc | Search, next hit, previous hit, close |
 | Ctrl+Page Up / Page Down | Previous / next sheet |
 | Ctrl+X | Cut (copy, then empty the cells) |
-| Ctrl+V | Paste tab-separated text at the selection; one value fills the whole selection |
+| Ctrl+V | Paste at the selection; a block repeats over a selection that is a multiple of its size |
 | Ctrl+Plus, Ctrl+Minus, Ctrl+0, Ctrl+wheel | Zoom the grid in, out, back to 100 % |
 
 Mouse: click a column or row header to select it, drag a header edge to resize,

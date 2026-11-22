@@ -13,7 +13,7 @@ use ferrosheet_core::{
     StyleChange, Summary, TextFormat, copy_text, find_all, parse_reference, ref_text,
 };
 
-use editing::{After, Engine, Op};
+use editing::{After, Copied, Engine, Op};
 
 use crate::grid::{self, Fit, GridOut, GridState};
 use crate::loader::{LoadMsg, Loader};
@@ -124,6 +124,8 @@ struct Doc {
     dirty: bool,
     /// Sizes of deleted rows/columns, one entry per deletion on the undo stack (newest last).
     removed: Vec<grid::Removed>,
+    /// The cells last copied here, to paste them with formulas and formatting.
+    copied: Option<Copied>,
 }
 
 impl Doc {
@@ -318,6 +320,7 @@ impl App {
             pending: VecDeque::new(),
             removed: Vec::new(),
             dirty: false,
+            copied: None,
         });
         self.update_title(ctx);
         self.search.hits.clear();
@@ -464,6 +467,10 @@ impl App {
             Cmd::Redo => self.undo(ctx, true),
             Cmd::Cut => {
                 self.copy(ctx, CopyFormat::Display);
+                // The cells are emptied right away, so a cut pastes as text.
+                if let Some(doc) = &mut self.doc {
+                    doc.copied = None;
+                }
                 self.clear_selection(ctx);
             }
             Cmd::Copy(f) => self.copy(ctx, f),
@@ -533,9 +540,19 @@ impl App {
     }
 
     fn copy(&mut self, ctx: &egui::Context, f: CopyFormat) {
-        let Some(v) = self.active_view() else { return };
-        let text = copy_text(&v.sheet, &v.grid.selection, f);
-        let n = v.grid.selection.cell_count();
+        let Some(doc) = &mut self.doc else { return };
+        let sheet = doc.active;
+        let Some(Some(v)) = doc.sheets.get(sheet) else {
+            return;
+        };
+        let sel = v.grid.selection;
+        let text = copy_text(&v.sheet, &sel, f);
+        let n = sel.cell_count();
+        doc.copied = Some(Copied {
+            sheet,
+            sel,
+            text: text.clone(),
+        });
         ctx.copy_text(text);
         self.status = Some((text::copied(n), ctx.input(|i| i.time)));
     }
@@ -2293,6 +2310,34 @@ mod tests {
         });
         assert_eq!(value(&mut h, 11, 1), CellValue::Empty);
         assert_eq!(formula(&mut h, 10, 1), None);
+    }
+
+    #[test]
+    fn pasting_cells_copied_here_moves_formulas_along_and_tiles_the_selection() {
+        let mut h = open(demo());
+        select(&mut h, 1, 3);
+        h.event(Event::Copy);
+        h.step();
+        let text = copied(&h).unwrap();
+        h.state_mut().active_view().unwrap().grid.selection = Selection {
+            anchor: CellPos::new(10, 3),
+            cursor: CellPos::new(11, 3),
+        };
+        // Windows may hand the text back with other line breaks.
+        h.event(Event::Paste(format!("{text}\r\n")));
+        settle(&mut h, |app| {
+            app.active_view().unwrap().formulas.contains_key(&(11, 3))
+        });
+        assert_eq!(formula(&mut h, 10, 3).as_deref(), Some("=B11*C11*(1-G11)"));
+        assert_eq!(formula(&mut h, 11, 3).as_deref(), Some("=B12*C12*(1-G12)"));
+
+        // Text from elsewhere still pastes as text.
+        select(&mut h, 13, 3);
+        h.event(Event::Paste("=1+2".into()));
+        settle(&mut h, |app| {
+            app.active_view().unwrap().sheet.value(13, 3) == &CellValue::Number(3.0)
+        });
+        assert_eq!(formula(&mut h, 13, 3).as_deref(), Some("=1+2"));
     }
 
     #[test]
