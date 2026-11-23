@@ -3259,14 +3259,17 @@ mod tests {
         let mut h = open(demo());
         select(&mut h, 2, 1);
         h.key_press_modifiers(Modifiers::COMMAND | Modifiers::SHIFT, Key::P);
-        h.run();
+        h.step();
+        h.step();
         assert!(h.state().palette.is_some());
         h.event(Event::Text("srt desc".into()));
-        h.run();
+        h.step();
+        h.step();
         // arrows move the choice, Enter runs it
         h.key_press(Key::ArrowDown);
         h.key_press(Key::ArrowUp);
-        h.run();
+        h.step();
+        h.step();
         h.key_press(Key::Enter);
         settle(&mut h, |app| {
             app.active_view().unwrap().sheet.value(1, 1) == &CellValue::Number(120.0)
@@ -3275,21 +3278,28 @@ mod tests {
         assert!(h.state().palette.is_none());
         // typing a sheet name switches to it; Escape closes without running anything
         h.key_press_modifiers(Modifiers::COMMAND | Modifiers::SHIFT, Key::P);
-        h.run();
+        h.step();
+        h.step();
         assert!(h.state().palette.is_some(), "error: {:?}", h.state().error);
         h.event(Event::Text("summary".into()));
-        h.run();
+        h.step();
+        h.step();
         assert_eq!(
             h.state().palette.as_ref().map(|p| p.query.as_str()),
             Some("summary")
         );
         h.key_press(Key::Enter);
-        h.run();
-        assert_eq!(h.state().doc.as_ref().unwrap().active, 1);
+        // the sheet loads in the background (a spinner keeps repainting): step, do not run
+        settle(&mut h, |app| {
+            app.doc.as_ref().is_some_and(|d| d.active == 1) && app.active_view().is_some()
+        });
         h.key_press_modifiers(Modifiers::COMMAND | Modifiers::SHIFT, Key::P);
-        h.run();
+        h.step();
+        h.step();
+        assert!(h.state().palette.is_some());
         h.key_press(Key::Escape);
-        h.run();
+        h.step();
+        h.step();
         assert!(h.state().palette.is_none());
     }
 }
