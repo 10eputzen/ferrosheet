@@ -29,7 +29,8 @@ question was: why not port that small piece to Rust?
 - Search across the current sheet or all sheets, as plain text or regular expression
 - Select cells, rows, columns or everything; copy as tab-separated text that pastes into
   Excel, Google Sheets or an email, and paste such text back in (Ctrl+V). Cells copied
-  inside ferrosheet keep their formatting, and relative references in formulas move along
+  inside ferrosheet keep their formatting, and relative references in formulas move along. *Edit → Copy as Markdown table* puts the selection on the clipboard as a table for
+  chats, issues and notes
 - Drag the small square at the corner of the selection to continue it: series such as
   1, 2, 3 · Item 1, Item 2 · Mon, Tue · Jan, Feb go on, other cells are repeated and
   formulas move along. Ctrl+D and Ctrl+R copy the first row or column over the selection

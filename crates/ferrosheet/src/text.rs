@@ -138,6 +138,7 @@ texts! {
     copy_raw: "Rohwerte kopieren", "Copy raw values";
     clear_contents: "Inhalte löschen", "Clear contents";
     paste: "Einfügen", "Paste";
+    copy_markdown: "Als Markdown-Tabelle kopieren", "Copy as Markdown table";
     fill_down: "Nach unten ausfüllen", "Fill down";
     fill_right: "Nach rechts ausfüllen", "Fill right";
     insert_rows_above: "Zeilen oberhalb einfügen", "Insert rows above";

@@ -1820,6 +1820,8 @@ fn edit_items(ui: &mut egui::Ui, cmd: &mut Option<Cmd>, on: bool) {
     );
     let raw = Cmd::Copy(CopyFormat::Invariant);
     item(ui, cmd, text::copy_raw(), "Ctrl+Shift+C", on, raw);
+    let md = Cmd::Copy(CopyFormat::Markdown);
+    item(ui, cmd, text::copy_markdown(), "", on, md);
     item(ui, cmd, text::paste(), "Ctrl+V", on, Cmd::Paste);
     item(ui, cmd, text::fill_down(), "Ctrl+D", on, Cmd::FillDown);
     item(ui, cmd, text::fill_right(), "Ctrl+R", on, Cmd::FillRight);
@@ -3301,5 +3303,24 @@ mod tests {
         h.step();
         h.step();
         assert!(h.state().palette.is_none());
+    }
+
+    #[test]
+    fn the_edit_menu_copies_a_markdown_table() {
+        let mut h = open(demo());
+        h.state_mut().active_view().unwrap().grid.selection = Selection {
+            anchor: CellPos::new(0, 0),
+            cursor: CellPos::new(2, 1),
+        };
+        h.run();
+        h.get_by_label("Edit").click();
+        h.run();
+        h.get_by_label(text::copy_markdown()).click();
+        h.step();
+        let md = copied(&h).unwrap();
+        assert!(
+            md.starts_with("| Item | Qty |\n| --- | ---: |\n| Screws M4 | 120 |"),
+            "{md}"
+        );
     }
 }
