@@ -16,6 +16,8 @@ pub enum LoadMsg {
         text_format: Option<TextFormat>,
         /// Defined names: name and formula.
         defined: Vec<(String, String)>,
+        /// Frozen (rows, columns) per sheet, as stored in an xlsx; empty otherwise.
+        frozen: Vec<(u32, u32)>,
     },
     Sheet {
         idx: usize,
@@ -62,6 +64,7 @@ impl Loader {
                 names: wb.sheet_names.clone(),
                 text_format: wb.text_format(),
                 defined: wb.defined_names(),
+                frozen: ferrosheet_core::frozen_panes(&path),
             });
             let mut loaded = vec![false; wb.sheet_names.len()];
             for idx in std::iter::once(0).chain(req_rx.iter()) {

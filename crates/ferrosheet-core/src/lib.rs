@@ -4,6 +4,7 @@
 mod csv;
 mod edit;
 mod formula;
+mod frozen;
 mod losses;
 mod search;
 mod selection;
@@ -18,6 +19,7 @@ pub use formula::{
     FormulaRef, accepts_ref, find_refs, is_name, parse_reference, ref_slot, ref_text, resolve_name,
     splice,
 };
+pub use frozen::frozen_panes;
 pub use losses::{Loss, save_losses};
 pub use search::{Query, find_all};
 pub use selection::{CellPos, CopyFormat, Selection, copy_text};

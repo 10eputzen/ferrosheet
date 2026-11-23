@@ -25,7 +25,8 @@ Spreadsheet functions (SUM, VLOOKUP, …) have their own list: [function parity]
 | Number formats from the file (currency, custom) | ✅ | 🟡 default formats only (German or neutral, by system language) |
 | Cell formatting from the file (fonts, colours, borders) | ✅ | ❌ values only |
 | Merged cells | ✅ | ❌ |
-| Freeze panes, hidden rows and columns | ✅ | ❌ |
+| Freeze panes | ✅ | ✅ top row, first column or at the cursor (*View → Freeze panes*); read from xlsx files. Changing them is not saved yet |
+| Hidden rows and columns | ✅ | ❌ |
 | Column width and row height: drag, double-click autofit | ✅ | ✅ |
 | Zoom | ✅ | ✅ grid only, 50–300 %, Ctrl+Plus/Minus/0 or Ctrl+wheel |
 | Add, rename, delete sheets | ✅ | ✅ "+" tab, double-click or right-click a tab |

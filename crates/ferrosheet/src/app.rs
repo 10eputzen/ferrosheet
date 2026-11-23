@@ -47,6 +47,9 @@ enum Cmd {
     FillRight,
     /// Sort the selection by the cursor's column (`true`: descending).
     Sort(bool),
+    /// Keep this many (rows, columns) in view while scrolling; `None`: rows above and
+    /// columns left of the cursor.
+    Freeze(Option<(u32, u32)>),
     /// Insert rows (below: after the selection) or columns (right: after it).
     InsertRows(bool),
     InsertCols(bool),
@@ -133,6 +136,8 @@ struct Doc {
     copied: Option<Copied>,
     /// Defined names (name and formula), for the name box.
     defined: Vec<(String, String)>,
+    /// Frozen (rows, columns) the file stores, by the loader's sheet index.
+    frozen: Vec<(u32, u32)>,
 }
 
 impl Doc {
@@ -329,6 +334,7 @@ impl App {
             dirty: false,
             copied: None,
             defined: Vec::new(),
+            frozen: Vec::new(),
         });
         self.update_title(ctx);
         self.search.hits.clear();
@@ -373,8 +379,10 @@ impl App {
                     names,
                     text_format,
                     defined,
+                    frozen,
                 } => {
                     doc.defined = defined;
+                    doc.frozen = frozen;
                     doc.sheets = names.iter().map(|_| None).collect();
                     doc.source = (0..names.len()).map(Some).collect();
                     doc.names = names;
@@ -388,6 +396,7 @@ impl App {
                     }
                 }
                 LoadMsg::Sheet { idx, sheet } => {
+                    let frozen = doc.frozen.get(idx).copied().unwrap_or_default();
                     // deleted meanwhile
                     let Some(idx) = doc.position(idx) else {
                         continue;
@@ -399,7 +408,11 @@ impl App {
                             v.sheet = sheet;
                             v.summary = None;
                         }
-                        slot => *slot = Some(SheetView::new(sheet)),
+                        slot => {
+                            let mut v = SheetView::new(sheet);
+                            v.grid.frozen = frozen;
+                            *slot = Some(v);
+                        }
                     }
                     // edits made while the full sheet was still loading
                     editing::refresh_sheet(doc, idx);
@@ -492,6 +505,12 @@ impl App {
             Cmd::FillDown => self.fill_copy(ctx, Lines::Rows),
             Cmd::FillRight => self.fill_copy(ctx, Lines::Cols),
             Cmd::Sort(descending) => self.sort(ctx, descending),
+            Cmd::Freeze(f) => {
+                if let Some(v) = self.active_view() {
+                    let cur = v.grid.selection.cursor;
+                    v.grid.frozen = f.unwrap_or((cur.row, cur.col));
+                }
+            }
             Cmd::InsertRows(below) => self.lines(ctx, Lines::Rows, true, below),
             Cmd::InsertCols(right) => self.lines(ctx, Lines::Cols, true, right),
             Cmd::DeleteRows => self.lines(ctx, Lines::Rows, false, false),
@@ -1036,6 +1055,7 @@ impl App {
         let doc = self.doc.is_some();
         let dirty = self.dirty();
         let st = self.cursor_style();
+        let frozen = self.active_view().is_some_and(|v| v.grid.frozen != (0, 0));
         let recent: Vec<PathBuf> = self.recent.existing().cloned().collect();
         egui::MenuBar::new().ui(ui, |ui| {
             ui.menu_button(text::menu_file(), |ui| {
@@ -1098,6 +1118,10 @@ impl App {
                     doc,
                     Cmd::Zoom(1.0),
                 );
+                ui.separator();
+                ui.add_enabled_ui(view, |ui| {
+                    ui.menu_button(text::freeze(), |ui| freeze_items(ui, &mut cmd, frozen));
+                });
             });
             ui.add_enabled_ui(view, |ui| {
                 ui.menu_button(text::menu_format(), |ui| format_items(ui, &mut cmd, st));
@@ -1805,6 +1829,24 @@ fn col_items(ui: &mut egui::Ui, cmd: &mut Option<Cmd>, on: bool) {
 fn data_items(ui: &mut egui::Ui, cmd: &mut Option<Cmd>, on: bool) {
     item(ui, cmd, text::sort_ascending(), "", on, Cmd::Sort(false));
     item(ui, cmd, text::sort_descending(), "", on, Cmd::Sort(true));
+}
+
+fn freeze_items(ui: &mut egui::Ui, cmd: &mut Option<Cmd>, frozen: bool) {
+    let top = Cmd::Freeze(Some((1, 0)));
+    item(ui, cmd, text::freeze_top_row(), "", true, top);
+    let first = Cmd::Freeze(Some((0, 1)));
+    item(ui, cmd, text::freeze_first_col(), "", true, first);
+    item(
+        ui,
+        cmd,
+        text::freeze_at_cursor(),
+        "",
+        true,
+        Cmd::Freeze(None),
+    );
+    ui.separator();
+    let off = Cmd::Freeze(Some((0, 0)));
+    item(ui, cmd, text::unfreeze(), "", frozen, off);
 }
 
 fn format_items(ui: &mut egui::Ui, cmd: &mut Option<Cmd>, st: CellStyle) {
@@ -3155,5 +3197,32 @@ mod tests {
             app.active_view().unwrap().sheet.value(1, 1) == &CellValue::Number(120.0)
         });
         assert_eq!(names(&mut h), before);
+    }
+
+    #[test]
+    fn frozen_panes_come_from_the_file_and_the_view_menu_changes_them() {
+        let dir = std::env::temp_dir().join("ferrosheet-tests").join("frozen");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("frozen.xlsx");
+        let mut wb = rust_xlsxwriter::Workbook::new();
+        let ws = wb.add_worksheet();
+        ws.write(0, 0, "Head").unwrap();
+        ws.write(1, 0, 1).unwrap();
+        ws.set_freeze_panes(1, 0).unwrap();
+        wb.save(&path).unwrap();
+
+        let mut h = open(path);
+        assert_eq!(h.state_mut().active_view().unwrap().grid.frozen, (1, 0));
+
+        select(&mut h, 3, 2);
+        h.get_by_label("View").click();
+        h.run();
+        h.get_by_label(text::freeze()).click();
+        h.run();
+        h.get_by_label(text::freeze_at_cursor()).click();
+        h.run();
+        assert_eq!(h.state_mut().active_view().unwrap().grid.frozen, (3, 2));
+        run(&mut h, Cmd::Freeze(Some((0, 0))));
+        assert_eq!(h.state_mut().active_view().unwrap().grid.frozen, (0, 0));
     }
 }
