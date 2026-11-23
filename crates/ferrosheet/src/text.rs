@@ -179,6 +179,10 @@ texts! {
     fit_width: "Optimale Spaltenbreite", "Autofit column width";
     fit_height: "Optimale Zeilenhöhe", "Autofit row height";
     new_sheet: "Neues Blatt", "New sheet";
+    sheet: "Blatt", "Sheet";
+    command_palette: "Alle Befehle …", "All commands …";
+    palette_hint: "Befehl, Blatt oder Datei suchen", "Search commands, sheets and files";
+    no_commands: "Nichts gefunden", "Nothing found";
     rename_sheet: "Umbenennen", "Rename";
     delete_sheet: "Blatt löschen", "Delete sheet";
     delete_sheet_title: "Blatt löschen?", "Delete sheet?";
