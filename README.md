@@ -46,6 +46,8 @@ question was: why not port that small piece to Rust?
   xls, xlsb and ods are saved as a new `.xlsx`. An xlsx keeps values, formulas and its
   formatting; comments, drop-downs, filters, tables and charts are not saved yet, and
   ferrosheet warns before overwriting a file that has them
+- Freeze the top row, the first column or everything above and left of the cursor
+  (*View → Freeze panes*); frozen panes stored in an xlsx are shown that way when it opens
 - Resize columns and rows by dragging, double-click an edge to fit the content
 - Light and dark mode, following the system
 - Damaged files end in an error message, never in a crash

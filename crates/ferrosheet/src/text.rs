@@ -121,6 +121,11 @@ texts! {
     menu_data: "Daten", "Data";
     sort_ascending: "Aufsteigend sortieren (A–Z)", "Sort ascending (A–Z)";
     sort_descending: "Absteigend sortieren (Z–A)", "Sort descending (Z–A)";
+    freeze: "Fixieren", "Freeze panes";
+    freeze_top_row: "Oberste Zeile fixieren", "Freeze top row";
+    freeze_first_col: "Erste Spalte fixieren", "Freeze first column";
+    freeze_at_cursor: "Bis zur aktuellen Zelle fixieren", "Freeze above and left of the cursor";
+    unfreeze: "Fixierung aufheben", "Unfreeze";
     recent: "Zuletzt geöffnet", "Recent files";
     no_recent: "Noch keine Dateien", "No files yet";
     open_button: "Datei öffnen …", "Open file …";

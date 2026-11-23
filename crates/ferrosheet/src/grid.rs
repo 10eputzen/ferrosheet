@@ -46,6 +46,8 @@ pub struct GridState {
     pub edit: Option<CellEdit>,
     /// Fit these columns or rows to their content on the next frame.
     pub fit: Option<Fit>,
+    /// Frozen panes: this many rows at the top and columns at the left stay in view.
+    pub frozen: (u32, u32),
     offset: Vec2,
     /// Screen position of the top-left corner of A1 in the last frame.
     origin: Pos2,
@@ -422,9 +424,27 @@ pub fn show(
     let current_fill = Color32::from_rgba_unmultiplied(255, 140, 0, 140);
 
     // --- body ---------------------------------------------------------------
+    // Frozen rows and columns, unless they would leave almost nothing to scroll.
+    let frozen = {
+        let (fr, fc) = (st.frozen.0.min(rows), st.frozen.1.min(cols));
+        let fr = if rh.top(fr) > body.height() * 0.8 {
+            0
+        } else {
+            fr
+        };
+        let fc = if xs[fc as usize] > body.width() * 0.8 {
+            0
+        } else {
+            fc
+        };
+        (fr, fc)
+    };
+    let (fr, fc) = frozen;
+    let (fh, fw) = (rh.top(fr), xs[fc as usize]);
     let mut area = ScrollArea::both().id_salt("grid").auto_shrink(false);
     if let Some(target) = st.scroll_to.take() {
-        area = area.scroll_offset(offset_to_show(target, &xs, rh, st.offset, body.size()));
+        let off = offset_to_show(target, &xs, rh, st.offset, body.size(), frozen);
+        area = area.scroll_offset(off);
     }
     let shift = ui.input(|i| i.modifiers.shift);
     let secondary = ui.input(|i| i.pointer.secondary_down() || i.pointer.secondary_released());
@@ -435,108 +455,176 @@ pub fn show(
                 let origin = rect.min;
                 st.origin = origin;
                 let painter = ui.painter_at(ui.clip_rect());
-                let (r0, r1) = visible_range(vp.min.y, vp.max.y, rows, rh);
-                let c0 = xs.partition_point(|&x| x <= vp.min.x).saturating_sub(1) as u32;
-                let c1 = (xs.partition_point(|&x| x < vp.max.x) as u32).min(cols);
+                // Frozen cells are drawn at the top and left of the view whatever the
+                // scroll offset; everything here is in content coordinates + `origin`.
+                let pane_shift = |r: u32, c: u32| {
+                    vec2(
+                        if c < fc { vp.min.x } else { 0.0 },
+                        if r < fr { vp.min.y } else { 0.0 },
+                    )
+                };
                 let cell_rect = |r: u32, c: u32| {
                     Rect::from_min_size(
-                        origin + vec2(xs[c as usize], rh.top(r)),
+                        origin + vec2(xs[c as usize], rh.top(r)) + pane_shift(r, c),
                         vec2(st.col_widths[c as usize], rh.height(r)),
                     )
                 };
+                let view = vp.translate(origin.to_vec2());
+                let split = view.min + vec2(fw, fh);
+                // The part of the view the pane holding cell (r, c) is drawn in.
+                let pane_clip = |r: u32, c: u32| {
+                    let (x0, x1) = if c < fc {
+                        (view.min.x, split.x)
+                    } else {
+                        (split.x, view.max.x)
+                    };
+                    let (y0, y1) = if r < fr {
+                        (view.min.y, split.y)
+                    } else {
+                        (split.y, view.max.y)
+                    };
+                    Rect::from_min_max(pos2(x0, y0), pos2(x1, y1))
+                };
+                // The cell under a point on screen.
+                let hit = |p: Pos2| {
+                    let mut q = p - origin;
+                    if p.x - view.min.x < fw {
+                        q.x = p.x - view.min.x;
+                    }
+                    if p.y - view.min.y < fh {
+                        q.y = p.y - view.min.y;
+                    }
+                    cell_at(q, &xs, rh, rows, cols)
+                };
+                let (r0, r1) = visible_range(vp.min.y + fh, vp.max.y, rows, rh);
+                let r0 = r0.max(fr);
+                let c0 = xs
+                    .partition_point(|&x| x <= vp.min.x + fw)
+                    .saturating_sub(1) as u32;
+                let c0 = c0.max(fc);
+                let c1 = (xs.partition_point(|&x| x < vp.max.x) as u32).min(cols);
 
-                painter.rect_filled(vp.translate(origin.to_vec2()), 0.0, pal.cell_bg);
+                painter.rect_filled(view, 0.0, pal.cell_bg);
+                let (tl, br) = st.selection.bounds();
 
-                // fill colours set by the user
-                for r in r0..r1.min(sheet.rows) {
-                    for c in c0..c1.min(sheet.cols) {
-                        if let Some([red, g, b]) = sheet.style(r, c).fill {
-                            painter.rect_filled(cell_rect(r, c), 0.0, Color32::from_rgb(red, g, b));
+                // One pane: fills, search hits, selection, grid lines and text of the
+                // cells in rows ra..rb and columns ca..cb.
+                let paint_pane = |ra: u32, rb: u32, ca: u32, cb: u32| {
+                    if ra >= rb || ca >= cb {
+                        return;
+                    }
+                    let painter = painter.with_clip_rect(pane_clip(ra, ca).intersect(view));
+
+                    // fill colours set by the user
+                    for r in ra..rb.min(sheet.rows) {
+                        for c in ca..cb.min(sheet.cols) {
+                            if let Some([red, g, b]) = sheet.style(r, c).fill {
+                                let fill = Color32::from_rgb(red, g, b);
+                                painter.rect_filled(cell_rect(r, c), 0.0, fill);
+                            }
                         }
                     }
-                }
 
-                // search hits (sorted row-major, so the visible ones are contiguous)
-                let first = hits.partition_point(|p| p.row < r0);
-                for p in hits[first..].iter().take_while(|p| p.row < r1) {
-                    if p.col >= c0 && p.col < c1 {
-                        let fill = if Some(*p) == current_hit {
-                            current_fill
-                        } else {
-                            hit_fill
-                        };
-                        painter.rect_filled(cell_rect(p.row, p.col), 0.0, fill);
+                    // search hits (sorted row-major, so the visible ones are contiguous)
+                    let first = hits.partition_point(|p| p.row < ra);
+                    for p in hits[first..].iter().take_while(|p| p.row < rb) {
+                        if p.col >= ca && p.col < cb {
+                            let fill = if Some(*p) == current_hit {
+                                current_fill
+                            } else {
+                                hit_fill
+                            };
+                            painter.rect_filled(cell_rect(p.row, p.col), 0.0, fill);
+                        }
                     }
-                }
 
-                // selection
-                let (tl, br) = st.selection.bounds();
+                    // the part of the selection in this pane
+                    let (sr0, sc0) = (tl.row.max(ra), tl.col.max(ca));
+                    let (sr1, sc1) = (br.row.min(rb - 1), br.col.min(cb - 1));
+                    if st.selection.cell_count() > 1 && sr0 <= sr1 && sc0 <= sc1 {
+                        let part = cell_rect(sr0, sc0).union(cell_rect(sr1, sc1));
+                        painter.rect_filled(part, 0.0, sel_fill);
+                    }
+
+                    // grid lines
+                    let top = cell_rect(ra, ca).top();
+                    let bottom = cell_rect(rb - 1, ca).bottom();
+                    let left = cell_rect(ra, ca).left();
+                    let right = cell_rect(ra, cb - 1).right();
+                    for c in ca..=cb {
+                        let x = left + xs[c as usize] - xs[ca as usize] - 0.5;
+                        painter.line_segment([pos2(x, top), pos2(x, bottom)], pal.col_line);
+                    }
+                    for r in ra..=rb {
+                        let y = top + rh.top(r) - rh.top(ra) - 0.5;
+                        painter.line_segment([pos2(left, y), pos2(right, y)], pal.row_line);
+                    }
+
+                    // text
+                    for r in ra..rb.min(sheet.rows) {
+                        for c in ca..cb.min(sheet.cols) {
+                            let text = sheet.display(r, c);
+                            if text.is_empty() {
+                                continue;
+                            }
+                            let value = sheet.value(r, c);
+                            let style = sheet.style(r, c);
+                            let color = match style.color {
+                                _ if matches!(value, CellValue::Error(_)) => visuals.error_fg_color,
+                                Some([red, g, b]) => Color32::from_rgb(red, g, b),
+                                None => pal.text,
+                            };
+                            let rect = cell_rect(r, c);
+                            // Default rows show the first line centred; taller rows show
+                            // all lines from the top, clipped to the cell.
+                            let tall = rect.height() > rh.base() + 1.0;
+                            let (anchor, pos) = match (value.is_numeric(), tall) {
+                                (true, false) => {
+                                    (Align2::RIGHT_CENTER, rect.right_center() - vec2(PAD, 0.0))
+                                }
+                                (false, false) => {
+                                    (Align2::LEFT_CENTER, rect.left_center() + vec2(PAD, 0.0))
+                                }
+                                (true, true) => {
+                                    (Align2::RIGHT_TOP, rect.right_top() + vec2(-PAD, TEXT_TOP))
+                                }
+                                (false, true) => {
+                                    (Align2::LEFT_TOP, rect.left_top() + vec2(PAD, TEXT_TOP))
+                                }
+                            };
+                            let line_text = if tall {
+                                &*text
+                            } else {
+                                text.lines().next().unwrap_or("")
+                            };
+                            let clipped = painter
+                                .with_clip_rect(rect.shrink(1.0).intersect(painter.clip_rect()));
+                            cell_text(&clipped, pos, anchor, line_text, &font, color, style);
+                        }
+                    }
+                };
+                paint_pane(r0, r1, c0, c1);
+                paint_pane(0, fr, c0, c1);
+                paint_pane(r0, r1, 0, fc);
+                paint_pane(0, fr, 0, fc);
+                // a stronger line where the frozen panes end
+                if fr > 0 {
+                    let y = split.y - 0.5;
+                    let line = [pos2(view.min.x, y), pos2(view.max.x, y)];
+                    painter.line_segment(line, pal.header_border);
+                }
+                if fc > 0 {
+                    let x = split.x - 0.5;
+                    let line = [pos2(x, view.min.y), pos2(x, view.max.y)];
+                    painter.line_segment(line, pal.header_border);
+                }
                 let sel = cell_rect(tl.row.min(rows - 1), tl.col.min(cols - 1))
                     .union(cell_rect(br.row.min(rows - 1), br.col.min(cols - 1)));
-                if st.selection.cell_count() > 1 {
-                    painter.rect_filled(sel, 0.0, sel_fill);
-                }
-
-                // grid lines
-                let top = origin.y + rh.top(r0);
-                let bottom = origin.y + rh.top(r1);
-                let left = origin.x + xs[c0 as usize];
-                let right = origin.x + xs[c1 as usize];
-                for c in c0..=c1 {
-                    let x = origin.x + xs[c as usize] - 0.5;
-                    painter.line_segment([pos2(x, top), pos2(x, bottom)], pal.col_line);
-                }
-                for r in r0..=r1 {
-                    let y = origin.y + rh.top(r) - 0.5;
-                    painter.line_segment([pos2(left, y), pos2(right, y)], pal.row_line);
-                }
-
-                // text
-                for r in r0..r1.min(sheet.rows) {
-                    for c in c0..c1.min(sheet.cols) {
-                        let text = sheet.display(r, c);
-                        if text.is_empty() {
-                            continue;
-                        }
-                        let value = sheet.value(r, c);
-                        let style = sheet.style(r, c);
-                        let color = match style.color {
-                            _ if matches!(value, CellValue::Error(_)) => visuals.error_fg_color,
-                            Some([red, g, b]) => Color32::from_rgb(red, g, b),
-                            None => pal.text,
-                        };
-                        let rect = cell_rect(r, c);
-                        // Default rows show the first line centred; taller rows show
-                        // all lines from the top, clipped to the cell.
-                        let tall = rect.height() > rh.base() + 1.0;
-                        let (anchor, pos) = match (value.is_numeric(), tall) {
-                            (true, false) => {
-                                (Align2::RIGHT_CENTER, rect.right_center() - vec2(PAD, 0.0))
-                            }
-                            (false, false) => {
-                                (Align2::LEFT_CENTER, rect.left_center() + vec2(PAD, 0.0))
-                            }
-                            (true, true) => {
-                                (Align2::RIGHT_TOP, rect.right_top() + vec2(-PAD, TEXT_TOP))
-                            }
-                            (false, true) => {
-                                (Align2::LEFT_TOP, rect.left_top() + vec2(PAD, TEXT_TOP))
-                            }
-                        };
-                        let line_text = if tall {
-                            &*text
-                        } else {
-                            text.lines().next().unwrap_or("")
-                        };
-                        let clipped =
-                            painter.with_clip_rect(rect.shrink(1.0).intersect(painter.clip_rect()));
-                        cell_text(&clipped, pos, anchor, line_text, &font, color, style);
-                    }
-                }
 
                 // cursor
                 let cur = st.selection.cursor;
                 if cur.row < rows && cur.col < cols {
+                    let painter = painter.with_clip_rect(pane_clip(cur.row, cur.col));
                     painter.rect_stroke(
                         cell_rect(cur.row, cur.col),
                         0.0,
@@ -655,7 +743,7 @@ pub fn show(
                 if resp.secondary_clicked()
                     && let Some(p) = resp.interact_pointer_pos()
                 {
-                    let cell = cell_at(p - origin, &xs, rh, rows, cols);
+                    let cell = hit(p);
                     if !st.selection.contains(cell) {
                         st.selection = Selection::single(cell);
                     }
@@ -686,7 +774,7 @@ pub fn show(
                 if let Some((src, target)) = &mut st.filling {
                     ui.ctx().set_cursor_icon(CursorIcon::Crosshair);
                     if let Some(p) = ui.input(|i| i.pointer.interact_pos()) {
-                        let cell = cell_at(p - origin, &xs, rh, rows, cols);
+                        let cell = hit(p);
                         *target = Fill::target(src, cell);
                         st.scroll_to = Some(cell);
                     }
@@ -710,12 +798,12 @@ pub fn show(
                         && let Some(p) = ui.input(|i| i.pointer.interact_pos())
                     {
                         e.point = Some(slot);
-                        e.pointing = Some(cell_at(p - origin, &xs, rh, rows, cols));
+                        e.pointing = Some(hit(p));
                     }
                     if let Some(anchor) = e.pointing {
                         pointed = true;
                         if let Some(p) = ui.input(|i| i.pointer.interact_pos()) {
-                            let cell = cell_at(p - origin, &xs, rh, rows, cols);
+                            let cell = hit(p);
                             e.write_ref(&ctx, anchor, cell);
                         }
                         if !ui.input(|i| i.pointer.primary_down()) {
@@ -732,7 +820,7 @@ pub fn show(
                     && resp.is_pointer_button_down_on()
                     && let Some(p) = ui.input(|i| i.pointer.interact_pos())
                 {
-                    let cell = cell_at(p - origin, &xs, rh, rows, cols);
+                    let cell = hit(p);
                     if ui.input(|i| i.pointer.primary_pressed()) && !shift {
                         st.selection = Selection::single(cell);
                     } else {
@@ -754,50 +842,62 @@ pub fn show(
     let corner = Rect::from_min_max(full.min, body.min);
     let (tl, br) = st.selection.bounds();
 
+    // Header positions follow the panes: frozen lines do not scroll.
+    let off = st.offset;
+    let col_x = |c: u32| xs[c as usize] - if c < fc { 0.0 } else { off.x };
+    let content_x = |x: f32| if x < fw { x } else { x + off.x };
+    let content_y = |y: f32| if y < fh { y } else { y + off.y };
+
     let painter = ui.painter_at(col_hdr);
     painter.rect_filled(col_hdr, 0.0, pal.header_bg);
     let (c0, c1) = (
-        xs.partition_point(|&x| x <= st.offset.x).saturating_sub(1) as u32,
-        (xs.partition_point(|&x| x < st.offset.x + body.width()) as u32).min(cols),
+        (xs.partition_point(|&x| x <= off.x + fw).saturating_sub(1) as u32).max(fc),
+        (xs.partition_point(|&x| x < off.x + body.width()) as u32).min(cols),
     );
-    for c in c0..c1 {
-        let x0 = col_hdr.min.x + xs[c as usize] - st.offset.x;
-        let rect = Rect::from_min_size(
-            pos2(x0, col_hdr.min.y),
-            vec2(st.col_widths[c as usize], header_h),
-        );
-        if (tl.col..=br.col).contains(&c) {
-            painter.rect_filled(rect, 0.0, sel_fill);
+    let scrolled = painter.with_clip_rect(col_hdr.with_min_x(col_hdr.min.x + fw));
+    for (painter, cs) in [(&scrolled, c0..c1), (&painter, 0..fc)] {
+        for c in cs {
+            let x0 = col_hdr.min.x + col_x(c);
+            let rect = Rect::from_min_size(
+                pos2(x0, col_hdr.min.y),
+                vec2(st.col_widths[c as usize], header_h),
+            );
+            if (tl.col..=br.col).contains(&c) {
+                painter.rect_filled(rect, 0.0, sel_fill);
+            }
+            painter.line_segment([rect.right_top(), rect.right_bottom()], pal.header_border);
+            painter.text(
+                rect.center(),
+                Align2::CENTER_CENTER,
+                column_name(c),
+                font.clone(),
+                pal.header_text,
+            );
         }
-        painter.line_segment([rect.right_top(), rect.right_bottom()], pal.header_border);
-        painter.text(
-            rect.center(),
-            Align2::CENTER_CENTER,
-            column_name(c),
-            font.clone(),
-            pal.header_text,
-        );
     }
 
     let painter = ui.painter_at(row_hdr);
     painter.rect_filled(row_hdr, 0.0, pal.header_bg);
     let rh = &st.row_heights;
-    let (r0, r1) = visible_range(st.offset.y, st.offset.y + body.height(), rows, rh);
-    for r in r0..r1 {
-        let y0 = row_hdr.min.y + rh.top(r) - st.offset.y;
-        let rect =
-            Rect::from_min_size(pos2(row_hdr.min.x, y0), vec2(row_hdr.width(), rh.height(r)));
-        if (tl.row..=br.row).contains(&r) {
-            painter.rect_filled(rect, 0.0, sel_fill);
+    let (r0, r1) = visible_range(off.y + fh, off.y + body.height(), rows, rh);
+    let scrolled = painter.with_clip_rect(row_hdr.with_min_y(row_hdr.min.y + fh));
+    for (painter, rs) in [(&scrolled, r0.max(fr)..r1), (&painter, 0..fr)] {
+        for r in rs {
+            let y0 = row_hdr.min.y + rh.top(r) - if r < fr { 0.0 } else { off.y };
+            let rect =
+                Rect::from_min_size(pos2(row_hdr.min.x, y0), vec2(row_hdr.width(), rh.height(r)));
+            if (tl.row..=br.row).contains(&r) {
+                painter.rect_filled(rect, 0.0, sel_fill);
+            }
+            painter.line_segment([rect.left_bottom(), rect.right_bottom()], pal.header_border);
+            painter.text(
+                rect.right_center() - vec2(PAD, 0.0),
+                Align2::RIGHT_CENTER,
+                (r + 1).to_string(),
+                font.clone(),
+                pal.header_text,
+            );
         }
-        painter.line_segment([rect.left_bottom(), rect.right_bottom()], pal.header_border);
-        painter.text(
-            rect.right_center() - vec2(PAD, 0.0),
-            Align2::RIGHT_CENTER,
-            (r + 1).to_string(),
-            font.clone(),
-            pal.header_text,
-        );
     }
     ui.painter_at(corner)
         .rect_filled(corner, 0.0, pal.header_bg);
@@ -843,14 +943,14 @@ pub fn show(
     // The edge is taken from where the button went down: once the drag threshold is
     // passed the pointer is already a few pixels away from it.
     let col_edge = |x: f32| -> Option<u32> {
-        let cx = x - col_hdr.min.x + st.offset.x;
+        let cx = content_x(x - col_hdr.min.x);
         (1..=cols)
             .find(|&c| (xs[c as usize] - cx).abs() <= RESIZE_GRAB)
             .map(|c| c - 1)
     };
     let row_edge = |y: f32| -> Option<u32> {
         let rh = &st.row_heights;
-        let cy = y - row_hdr.min.y + st.offset.y;
+        let cy = content_y(y - row_hdr.min.y);
         let r = rh.row_at(cy);
         if rh.top(r) + rh.height(r) - cy <= RESIZE_GRAB {
             Some(r)
@@ -916,7 +1016,7 @@ pub fn show(
     if col_resp.secondary_clicked()
         && let Some(p) = col_resp.interact_pointer_pos()
     {
-        let x = p.x - col_hdr.min.x + st.offset.x;
+        let x = content_x(p.x - col_hdr.min.x);
         let c = (xs.partition_point(|&e| e <= x).saturating_sub(1) as u32).min(cols - 1);
         if !(tl.col..=br.col).contains(&c) || tl.row != 0 || br.row < last_row {
             st.selection = Selection {
@@ -930,7 +1030,7 @@ pub fn show(
     {
         let r = st
             .row_heights
-            .row_at(p.y - row_hdr.min.y + st.offset.y)
+            .row_at(content_y(p.y - row_hdr.min.y))
             .min(rows - 1);
         if !(tl.row..=br.row).contains(&r) || tl.col != 0 || br.col < last_col {
             st.selection = Selection {
@@ -955,6 +1055,7 @@ pub fn show(
             last_row,
             last_col,
             shift,
+            vec2(fw, fh),
         );
     }
     if !secondary && st.resizing.is_none() && row_press_edge.is_none() {
@@ -970,6 +1071,7 @@ pub fn show(
             last_row,
             last_col,
             shift,
+            vec2(fw, fh),
         );
     }
 
@@ -1040,6 +1142,7 @@ fn header_select(
     last_row: u32,
     last_col: u32,
     shift: bool,
+    pane: Vec2,
 ) {
     if !resp.is_pointer_button_down_on() {
         return;
@@ -1050,7 +1153,8 @@ fn header_select(
     let pressed = ui.input(|i| i.pointer.primary_pressed());
     match kind {
         Header::Cols => {
-            let x = p.x - strip.min.x + st.offset.x;
+            let x = p.x - strip.min.x;
+            let x = if x < pane.x { x } else { x + st.offset.x };
             let c = (xs.partition_point(|&e| e <= x).saturating_sub(1) as u32).min(cols - 1);
             if pressed && !shift {
                 st.selection.anchor = CellPos::new(0, c);
@@ -1061,7 +1165,10 @@ fn header_select(
         Header::Rows => {
             let r = st
                 .row_heights
-                .row_at(p.y - strip.min.y + st.offset.y)
+                .row_at({
+                    let y = p.y - strip.min.y;
+                    if y < pane.y { y } else { y + st.offset.y }
+                })
                 .min(rows - 1);
             if pressed && !shift {
                 st.selection.anchor = CellPos::new(r, 0);
@@ -1140,11 +1247,21 @@ fn cell_at(p: Vec2, xs: &[f32], rh: &RowHeights, rows: u32, cols: u32) -> CellPo
 }
 
 /// Scroll offset that brings `target` fully into view, moving as little as possible.
-fn offset_to_show(target: CellPos, xs: &[f32], rh: &RowHeights, offset: Vec2, view: Vec2) -> Vec2 {
+/// Frozen rows and columns never need scrolling; the others must clear the panes.
+fn offset_to_show(
+    target: CellPos,
+    xs: &[f32],
+    rh: &RowHeights,
+    offset: Vec2,
+    view: Vec2,
+    (fr, fc): (u32, u32),
+) -> Vec2 {
     let ci = (target.col as usize).min(xs.len().saturating_sub(2));
-    let (x0, x1) = (xs[ci], xs[ci + 1]);
-    let y0 = rh.top(target.row);
+    let (fh, fw) = (rh.top(fr), xs[(fc as usize).min(xs.len() - 1)]);
+    let (x0, x1) = (xs[ci] - fw, xs[ci + 1] - fw);
+    let y0 = rh.top(target.row) - fh;
     let y1 = y0 + rh.height(target.row);
+    let view = view - vec2(fw, fh);
     let fit = |lo: f32, hi: f32, off: f32, size: f32| {
         if lo < off {
             lo
@@ -1154,7 +1271,18 @@ fn offset_to_show(target: CellPos, xs: &[f32], rh: &RowHeights, offset: Vec2, vi
             off
         }
     };
-    vec2(fit(x0, x1, offset.x, view.x), fit(y0, y1, offset.y, view.y))
+    vec2(
+        if target.col < fc {
+            offset.x
+        } else {
+            fit(x0, x1, offset.x, view.x)
+        },
+        if target.row < fr {
+            offset.y
+        } else {
+            fit(y0, y1, offset.y, view.y)
+        },
+    )
 }
 
 fn digits(n: u32) -> u32 {
@@ -1240,6 +1368,68 @@ mod tests {
             40.0 + c as f32 * DEFAULT_W + DEFAULT_W / 2.0,
             HEADER_H + r as f32 * ROW_H + ROW_H / 2.0,
         )
+    }
+
+    fn click(h: &mut Harness<'static, (GridState, egui::Pos2)>, at: egui::Pos2) {
+        h.hover_at(at);
+        h.run();
+        for pressed in [true, false] {
+            h.event(egui::Event::PointerButton {
+                pos: at,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: egui::Modifiers::NONE,
+            });
+        }
+        h.run();
+    }
+
+    #[test]
+    fn frozen_rows_and_columns_stay_in_view_while_scrolling() {
+        let cells = (0..200 * 30).map(|i| CellValue::Number(i as f64)).collect();
+        let sheet = Sheet::from_cells("big".into(), 200, 30, cells, Locale::Invariant);
+        let mut h = harness_for(sheet);
+        h.run();
+        let o = h.state().1;
+        h.state_mut().0.frozen = (1, 1);
+        h.state_mut().0.scroll_to = Some(CellPos::new(150, 20));
+        h.run();
+        h.run();
+        let st = &h.state().0;
+        assert!(st.offset.y > 100.0 * ROW_H && st.offset.x > 10.0 * DEFAULT_W);
+
+        // the corner cell is still A1
+        click(&mut h, cell_center(o, 0, 0));
+        assert_eq!(h.state().0.selection.cursor, CellPos::new(0, 0));
+        // the top row keeps row 1 but its columns scroll
+        click(&mut h, cell_center(o, 0, 3));
+        let cur = h.state().0.selection.cursor;
+        assert!(cur.row == 0 && cur.col > 10, "{cur:?}");
+        // the first column keeps column A but its rows scroll
+        click(&mut h, cell_center(o, 3, 0));
+        let cur = h.state().0.selection.cursor;
+        assert!(cur.col == 0 && cur.row > 100, "{cur:?}");
+        // a row header click in the scrolled part selects a scrolled row
+        let row_hdr = o + vec2(20.0, HEADER_H + 3.5 * ROW_H);
+        click(&mut h, row_hdr);
+        assert_eq!(h.state().0.selection.anchor.row, cur.row);
+    }
+
+    #[test]
+    fn scrolling_to_a_cell_keeps_it_clear_of_the_frozen_panes() {
+        let frozen = (2, 1);
+        let xs: Vec<f32> = (0..=30).map(|c| c as f32 * DEFAULT_W).collect();
+        let rh = RowHeights::default();
+        let view = vec2(500.0, 300.0);
+        // a cell above the scrolled part: brought down below the two frozen rows
+        let off = offset_to_show(CellPos::new(5, 3), &xs, &rh, vec2(0.0, 400.0), view, frozen);
+        assert_eq!(off.y, 3.0 * ROW_H);
+        // a frozen row never scrolls
+        let off = offset_to_show(CellPos::new(1, 3), &xs, &rh, vec2(0.0, 400.0), view, frozen);
+        assert_eq!(off.y, 400.0);
+        // a column left of the scrolled part comes in right of the frozen column
+        let off = offset_to_show(CellPos::new(5, 4), &xs, &rh, vec2(900.0, 0.0), view, frozen);
+        assert_eq!(off.x, 3.0 * DEFAULT_W);
     }
 
     #[test]
