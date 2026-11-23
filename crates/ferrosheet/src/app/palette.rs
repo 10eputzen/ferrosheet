@@ -118,6 +118,8 @@ impl App {
             add(edit, text::copy(), "Ctrl+C", Cmd::Copy(CopyFormat::Display));
             let raw = Cmd::Copy(CopyFormat::Invariant);
             add(edit, text::copy_raw(), "Ctrl+Shift+C", raw);
+            let md = Cmd::Copy(CopyFormat::Markdown);
+            add(edit, text::copy_markdown(), "", md);
             add(edit, text::paste(), "Ctrl+V", Cmd::Paste);
             add(edit, text::fill_down(), "Ctrl+D", Cmd::FillDown);
             add(edit, text::fill_right(), "Ctrl+R", Cmd::FillRight);

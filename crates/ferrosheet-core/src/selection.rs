@@ -1,6 +1,6 @@
 //! Rectangular cell selection and the text it puts on the clipboard.
 
-use crate::{Locale, Sheet};
+use crate::{CellValue, Locale, Sheet};
 
 /// What [`copy_text`] puts on the clipboard.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -9,6 +9,8 @@ pub enum CopyFormat {
     Display,
     /// Locale-neutral raw values: decimal point, ISO dates, `TRUE`/`FALSE`.
     Invariant,
+    /// A Markdown table as shown, first row as its header, for chats, issues and notes.
+    Markdown,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -85,6 +87,9 @@ pub fn copy_text(sheet: &Sheet, sel: &Selection, f: CopyFormat) -> String {
     if tl.row > last_row || tl.col > last_col {
         return String::new();
     }
+    if f == CopyFormat::Markdown {
+        return markdown(sheet, tl, CellPos::new(last_row, last_col));
+    }
     let mut out = String::new();
     for r in tl.row..=last_row {
         if r > tl.row {
@@ -99,10 +104,38 @@ pub fn copy_text(sheet: &Sheet, sel: &Selection, f: CopyFormat) -> String {
                 CopyFormat::Invariant => {
                     push_cell(&mut out, &sheet.value(r, c).format(Locale::Invariant))
                 }
+                CopyFormat::Markdown => unreachable!("handled above"),
             }
         }
     }
     out
+}
+
+/// The cells from `tl` to `br` as a Markdown table: the first row is the header, and
+/// columns holding only numbers below it are right-aligned.
+fn markdown(sheet: &Sheet, tl: CellPos, br: CellPos) -> String {
+    let cell = |r: u32, c: u32| {
+        let s = sheet.display(r, c);
+        let s = s.trim().replace('|', "\\|");
+        s.lines().collect::<Vec<_>>().join("<br>")
+    };
+    let row = |r: u32| {
+        let cells: Vec<String> = (tl.col..=br.col).map(|c| cell(r, c)).collect();
+        format!("| {} |", cells.join(" | "))
+    };
+    let rule: Vec<&str> = (tl.col..=br.col)
+        .map(|c| {
+            let mut below = (tl.row + 1..=br.row)
+                .map(|r| sheet.value(r, c))
+                .filter(|v| !matches!(v, CellValue::Empty))
+                .peekable();
+            let numeric = below.peek().is_some() && below.all(CellValue::is_numeric);
+            if numeric { "---:" } else { "---" }
+        })
+        .collect();
+    let mut out = vec![row(tl.row), format!("| {} |", rule.join(" | "))];
+    out.extend((tl.row + 1..=br.row).map(row));
+    out.join("\n") + "\n"
 }
 
 fn push_cell(out: &mut String, s: &str) {
@@ -129,6 +162,26 @@ mod tests {
             anchor: CellPos::new(0, 0),
             cursor: CellPos::new(rows - 1, cols - 1),
         }
+    }
+
+    #[test]
+    fn markdown_has_a_header_row_and_right_aligns_numbers() {
+        let s = sheet(
+            3,
+            2,
+            vec![
+                Text("Item".into()),
+                Text("Price".into()),
+                Text("a|b".into()),
+                Number(1.5),
+                Text("two\nlines".into()),
+                Empty,
+            ],
+        );
+        assert_eq!(
+            copy_text(&s, &all(3, 2), CopyFormat::Markdown),
+            "| Item | Price |\n| --- | ---: |\n| a\\|b | 1,5 |\n| two<br>lines |  |\n"
+        );
     }
 
     #[test]
