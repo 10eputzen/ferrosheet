@@ -40,7 +40,8 @@ Spreadsheet functions (SUM, VLOOKUP, …) have their own list: [function parity]
 | Name box, go to a cell or range (`B200`, `Sheet2!A1`, `A1:C10`) | ✅ | ✅ Ctrl+G or F5; also defined names, listed under *Names* next to the box |
 | Select cells, rows, columns, all | ✅ | ✅ |
 | Copy as tab-separated text (pastes into Excel, Sheets, mail) | ✅ | ✅ plus raw values with Ctrl+Shift+C |
-| Sort and filter | ✅ | ❌ (maybe later, view-only) |
+| Sort | ✅ | ✅ by the cursor's column, ascending or descending (*Data* menu, right-click); one cell sorts the block around it and keeps a header row; one undo step |
+| Filter | ✅ | ❌ (maybe later, view-only) |
 | Sum, average and count of the selection in the status bar | ✅ | ✅ |
 | **Editing** | | |
 | Edit cells | ✅ | ✅ |

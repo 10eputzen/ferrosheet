@@ -118,6 +118,9 @@ texts! {
     check_failed: "Suche fehlgeschlagen", "Check failed";
     update_off: "Die Update-Suche ist in dieser Version ausgeschaltet.", "Updates are turned off in this build.";
     menu_format: "Format", "Format";
+    menu_data: "Daten", "Data";
+    sort_ascending: "Aufsteigend sortieren (A–Z)", "Sort ascending (A–Z)";
+    sort_descending: "Absteigend sortieren (Z–A)", "Sort descending (Z–A)";
     recent: "Zuletzt geöffnet", "Recent files";
     no_recent: "Noch keine Dateien", "No files yet";
     open_button: "Datei öffnen …", "Open file …";
@@ -303,6 +306,18 @@ pub fn copied(cells: u64) -> String {
         (Lang::De, n) => format!("{n} Zellen kopiert"),
         (Lang::En, 1) => "1 cell copied".into(),
         (Lang::En, n) => format!("{n} cells copied"),
+    }
+}
+
+/// Status after a sort: how many rows, by which column, and whether a header stayed.
+pub fn sorted(rows: u32, column: &str, header: bool) -> String {
+    match (lang(), header) {
+        (Lang::De, false) => format!("{rows} Zeilen nach Spalte {column} sortiert"),
+        (Lang::De, true) => {
+            format!("{rows} Zeilen nach Spalte {column} sortiert, Kopfzeile bleibt oben")
+        }
+        (Lang::En, false) => format!("{rows} rows sorted by column {column}"),
+        (Lang::En, true) => format!("{rows} rows sorted by column {column}, header row kept"),
     }
 }
 

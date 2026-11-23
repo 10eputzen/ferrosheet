@@ -8,8 +8,8 @@ use std::sync::mpsc::{Receiver, TryRecvError, channel};
 
 use eframe::egui::{self, Color32, ViewportCommand};
 use ferrosheet_core::{
-    CellPos, EditSession, Fill, Lines, NumberFormat, Query, Selection, Sheet, StyleChange,
-    ref_text, save_losses, splice, write_csv,
+    CellPos, EditSession, Fill, Lines, NumberFormat, Query, Selection, Sheet, SortRange,
+    StyleChange, ref_text, save_losses, splice, write_csv,
 };
 
 use super::{App, Doc, SheetView};
@@ -54,6 +54,12 @@ pub(super) enum Op {
         sheet: usize,
         sel: Selection,
         lines: Lines,
+    },
+    /// Sorts the rows of `range` by its key column.
+    Sort {
+        sheet: usize,
+        range: SortRange,
+        descending: bool,
     },
     /// Names the cells `sel` on `sheet` (workbook-wide).
     DefineName {
@@ -416,6 +422,22 @@ impl App {
                     }
                 }),
                 Op::FillCopy { sheet, sel, lines } => s.fill_copy(sheet, &sel, lines).map(|_| ()),
+                Op::Sort {
+                    sheet,
+                    range,
+                    descending,
+                } => s
+                    .sort(sheet, &range.rows(), range.key, descending)
+                    .map(|_| {
+                        if let Some(Some(v)) = doc.sheets.get_mut(sheet) {
+                            v.grid.selection = range.area;
+                        }
+                        let (tl, br) = range.rows().bounds();
+                        let col = ferrosheet_core::column_name(range.key);
+                        let msg = text::sorted(br.row - tl.row + 1, &col, range.header);
+                        self.status = Some((msg, f64::NAN));
+                        ctx.request_repaint();
+                    }),
                 Op::Lines {
                     sheet,
                     lines,
@@ -856,6 +878,22 @@ impl App {
         let Some(doc) = &self.doc else { return };
         let sheet = doc.active;
         self.queue(ctx, Op::Fill { sheet, src, fill });
+    }
+
+    /// Sorts the selection (or the block around the cursor) by the cursor's column.
+    pub(super) fn sort(&mut self, ctx: &egui::Context, descending: bool) {
+        let Some(doc) = &self.doc else { return };
+        let sheet = doc.active;
+        let Some(Some(v)) = doc.sheets.get(sheet) else {
+            return;
+        };
+        let range = v.sheet.sort_range(&v.grid.selection);
+        let op = Op::Sort {
+            sheet,
+            range,
+            descending,
+        };
+        self.queue(ctx, op);
     }
 
     /// Delete: empties the selected cells.
