@@ -1,8 +1,11 @@
 name: Release
 
-# Tag v* builds and publishes a release; manual runs only upload the build artifacts.
+# A version bump merged to main tags v<version> and publishes that release; a pushed
+# tag v* does the same. Manual runs only upload the build artifacts.
 on:
   push:
+    branches: [main]
+    paths: ["Cargo.toml"]
     tags: ["v*"]
   workflow_dispatch:
 
@@ -13,7 +16,37 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  # Which release this run publishes, if any. On main it sets the tag for the version
+  # in Cargo.toml unless that tag exists already (a tag pushed with the workflow token
+  # starts no second run).
+  version:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v7
+      - id: tag
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            echo "tag=$GITHUB_REF_NAME" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          [[ "$GITHUB_EVENT_NAME" == push ]] || exit 0
+          version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)
+          tag="v$version"
+          if git ls-remote --exit-code --tags origin "refs/tags/$tag" > /dev/null; then
+            echo "$tag exists, nothing to release"
+            exit 0
+          fi
+          git tag "$tag"
+          git push origin "refs/tags/$tag"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
   build:
+    needs: version
+    if: needs.version.outputs.tag != '' || github.event_name == 'workflow_dispatch'
     strategy:
       fail-fast: false
       matrix:
@@ -25,6 +58,8 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.version.outputs.tag || github.sha }}
       - name: Linux build dependencies
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y libxkbcommon-dev libgl1-mesa-dev libwayland-dev libx11-dev libxcursor-dev libxrandr-dev libxi-dev xvfb libxkbcommon-x11-0
@@ -53,9 +88,13 @@ jobs:
   # Smoke test in its own job, so the release does not wait for a second build:
   # start the Linux build on a virtual display and save a screenshot.
   screenshot:
+    needs: version
+    if: needs.version.outputs.tag != '' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.version.outputs.tag || github.sha }}
       - run: sudo apt-get update && sudo apt-get install -y libxkbcommon-dev libgl1-mesa-dev libwayland-dev libx11-dev libxcursor-dev libxrandr-dev libxi-dev xvfb libxkbcommon-x11-0
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - name: Screenshot (Linux)
@@ -69,8 +108,8 @@ jobs:
           path: screenshot-linux.png
 
   publish:
-    if: startsWith(github.ref, 'refs/tags/v')
-    needs: build
+    if: needs.version.outputs.tag != ''
+    needs: [version, build]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -84,16 +123,18 @@ jobs:
       - name: Sign
         env:
           UPDATE_SIGNING_KEY: ${{ secrets.UPDATE_SIGNING_KEY }}
+          TAG: ${{ needs.version.outputs.tag }}
         run: |
           test -n "$UPDATE_SIGNING_KEY" || { echo "secret UPDATE_SIGNING_KEY missing"; exit 1; }
           key=$(mktemp)
           printf '%s\n' "$UPDATE_SIGNING_KEY" > "$key"
           for f in ferrosheet-*.zip ferrosheet-*.tar.gz; do
-            { cat "$f"; printf '\nferrosheet %s %s\n' "$GITHUB_REF_NAME" "$f"; } > msg
+            { cat "$f"; printf '\nferrosheet %s %s\n' "$TAG" "$f"; } > msg
             openssl pkeyutl -sign -inkey "$key" -rawin -in msg -out "$f.sig"
           done
           rm -f "$key" msg
       - uses: softprops/action-gh-release@8a0cd651e5b2365bd640854a3fa5dfc70e4875f3 # v3.0.4
         with:
+          tag_name: ${{ needs.version.outputs.tag }}
           files: ferrosheet-*
           generate_release_notes: true
