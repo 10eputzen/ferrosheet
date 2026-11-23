@@ -49,6 +49,8 @@ question was: why not port that small piece to Rust?
 - Freeze the top row, the first column or everything above and left of the cursor
   (*View → Freeze panes*); frozen panes stored in an xlsx are shown that way when it opens
 - Resize columns and rows by dragging, double-click an edge to fit the content
+- Every command, sheet and recent file a few keystrokes away: Ctrl+Shift+P opens a
+  searchable list with the shortcut of each command
 - Light and dark mode, following the system
 - Damaged files end in an error message, never in a crash
 
@@ -103,6 +105,7 @@ cargo install --path crates/ferrosheet
 
 | Keys | Action |
 | --- | --- |
+| Ctrl+Shift+P | All commands: type a few letters of a command, sheet or recent file, Enter runs it |
 | Ctrl+O | Open a file (or drop it on the window) |
 | Arrows, Tab | Move; Shift extends the selection (Shift+Tab moves back) |
 | Typing, F2, Enter, double-click, click into the formula bar | Edit the cell; Enter saves and moves down, Tab right, Esc cancels |

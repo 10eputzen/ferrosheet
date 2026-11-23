@@ -75,6 +75,7 @@ Spreadsheet functions (SUM, VLOOKUP, …) have their own list: [function parity]
 | Print, page layout | ✅ | ❌ |
 | Spell check | ✅ | ❌ |
 | Collaboration, change tracking | partly | ❌ |
+| Command search (find any command by typing) | ❌ (only in the help search) | ✅ Ctrl+Shift+P: commands, sheets and recent files, with shortcuts |
 | Settings dialog | ✅ | 🟡 later |
 
 **Rough parity:** for "open, read, find, copy" ferrosheet covers the everyday path completely

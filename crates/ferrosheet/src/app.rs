@@ -1,6 +1,7 @@
 //! Application state and the frame-by-frame UI.
 
 mod editing;
+mod palette;
 
 use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
@@ -73,6 +74,8 @@ enum Cmd {
     Rename(usize, String),
     DeleteSheet(usize),
     About,
+    /// Open the command palette.
+    Palette,
     /// Add ferrosheet to "Open with" and open the default-apps settings.
     #[cfg(windows)]
     Register,
@@ -256,6 +259,8 @@ pub struct App {
     name_focus: bool,
     /// Selection to show once the sheet Go to switched to has loaded.
     goto: Option<Selection>,
+    /// The command palette, while open.
+    palette: Option<palette::Palette>,
 }
 
 impl App {
@@ -531,6 +536,7 @@ impl App {
             Cmd::Style(c) => self.style(ctx, c),
             Cmd::Zoom(z) => self.set_zoom(z),
             Cmd::About => self.about = true,
+            Cmd::Palette => self.palette = Some(palette::Palette::new()),
             #[cfg(windows)]
             Cmd::Register => crate::register::run(crate::register::Action::Register),
             Cmd::SelectCols | Cmd::SelectRows | Cmd::FitCols | Cmd::FitRows => {
@@ -925,7 +931,10 @@ impl App {
             }
         });
         let editing = ctx.memory(|m| m.focused().is_some());
-        let modal = self.confirm.is_some() || self.error.is_some() || self.lossy.is_some();
+        let modal = self.confirm.is_some()
+            || self.error.is_some()
+            || self.lossy.is_some()
+            || self.palette.is_some();
         // Alt+= and Ctrl+; may come with the character too; it must not start editing.
         if actions
             .iter()
@@ -943,6 +952,12 @@ impl App {
             let ctrl = m.command;
             let cell = self.editing_cell();
             match key {
+                Key::P if ctrl && m.shift && !modal => {
+                    if cell {
+                        self.cancel_edit(ctx);
+                    }
+                    self.run(ctx, Cmd::Palette);
+                }
                 _ if modal => {}
                 Key::Enter if cell => {
                     self.commit_edit(ctx, Some((if m.shift { -1 } else { 1 }, 0)));
@@ -1122,6 +1137,16 @@ impl App {
                 ui.add_enabled_ui(view, |ui| {
                     ui.menu_button(text::freeze(), |ui| freeze_items(ui, &mut cmd, frozen));
                 });
+                ui.separator();
+                let all = Cmd::Palette;
+                item(
+                    ui,
+                    &mut cmd,
+                    text::command_palette(),
+                    "Ctrl+Shift+P",
+                    true,
+                    all,
+                );
             });
             ui.add_enabled_ui(view, |ui| {
                 ui.menu_button(text::menu_format(), |ui| format_items(ui, &mut cmd, st));
@@ -1765,6 +1790,9 @@ impl eframe::App for App {
         self.lossy_modal(&ctx);
         self.delete_sheet_modal(&ctx);
         self.about_modal(&ctx);
+        if let Some(c) = self.palette_modal(&ctx) {
+            self.run(&ctx, c);
+        }
         self.error_modal(&ctx);
     }
 }
@@ -3224,5 +3252,44 @@ mod tests {
         assert_eq!(h.state_mut().active_view().unwrap().grid.frozen, (3, 2));
         run(&mut h, Cmd::Freeze(Some((0, 0))));
         assert_eq!(h.state_mut().active_view().unwrap().grid.frozen, (0, 0));
+    }
+
+    #[test]
+    fn the_command_palette_finds_a_command_by_a_few_letters_and_runs_it() {
+        let mut h = open(demo());
+        select(&mut h, 2, 1);
+        h.key_press_modifiers(Modifiers::COMMAND | Modifiers::SHIFT, Key::P);
+        h.run();
+        assert!(h.state().palette.is_some());
+        h.event(Event::Text("srt desc".into()));
+        h.run();
+        // arrows move the choice, Enter runs it
+        h.key_press(Key::ArrowDown);
+        h.key_press(Key::ArrowUp);
+        h.run();
+        h.key_press(Key::Enter);
+        settle(&mut h, |app| {
+            app.active_view().unwrap().sheet.value(1, 1) == &CellValue::Number(120.0)
+                && app.active_view().unwrap().sheet.value(4, 1) == &CellValue::Number(1.0)
+        });
+        assert!(h.state().palette.is_none());
+        // typing a sheet name switches to it; Escape closes without running anything
+        h.key_press_modifiers(Modifiers::COMMAND | Modifiers::SHIFT, Key::P);
+        h.run();
+        assert!(h.state().palette.is_some(), "error: {:?}", h.state().error);
+        h.event(Event::Text("summary".into()));
+        h.run();
+        assert_eq!(
+            h.state().palette.as_ref().map(|p| p.query.as_str()),
+            Some("summary")
+        );
+        h.key_press(Key::Enter);
+        h.run();
+        assert_eq!(h.state().doc.as_ref().unwrap().active, 1);
+        h.key_press_modifiers(Modifiers::COMMAND | Modifiers::SHIFT, Key::P);
+        h.run();
+        h.key_press(Key::Escape);
+        h.run();
+        assert!(h.state().palette.is_none());
     }
 }
