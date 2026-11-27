@@ -7,8 +7,16 @@ use std::sync::OnceLock;
 
 use crate::{CellPos, CellValue, Locale, Selection};
 
-/// Look of a cell beyond its value. Only cells that were edited carry one.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+/// Horizontal alignment set on a cell; without one, numbers go right and text left.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum HAlign {
+    Left,
+    Center,
+    Right,
+}
+
+/// Look of a cell beyond its value, from the file or from editing.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct CellStyle {
     pub bold: bool,
     pub italic: bool,
@@ -16,6 +24,17 @@ pub struct CellStyle {
     pub color: Option<[u8; 3]>,
     /// Background, `None` = no fill.
     pub fill: Option<[u8; 3]>,
+    /// Font size in tenths of a point, `None` = the default 11 pt.
+    pub size: Option<u16>,
+    pub align: Option<HAlign>,
+}
+
+/// Styles of the cells as the file has them: one palette index per cell.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct FileStyles {
+    pub palette: Vec<CellStyle>,
+    /// Row-major like the cells; empty when no cell has a style.
+    pub ids: Vec<u16>,
 }
 
 /// Sum, average and count of a selection, as Excel shows them in the status bar.
@@ -45,7 +64,11 @@ pub struct Sheet {
     locale: Locale,
     /// Display text from a number format of the cell (e.g. `1.234,50 €`), edited cells only.
     formatted: HashMap<(u32, u32), Box<str>>,
+    /// Styles of edited cells; they win over `file_styles`.
     styles: HashMap<(u32, u32), CellStyle>,
+    file_styles: FileStyles,
+    /// Merged cell ranges (top left, bottom right).
+    merges: Vec<(CellPos, CellPos)>,
     /// Lower-cased display text, built on first search.
     lower: OnceLock<Vec<Box<str>>>,
 }
@@ -106,7 +129,42 @@ impl Sheet {
     }
 
     pub fn style(&self, r: u32, c: u32) -> CellStyle {
-        self.styles.get(&(r, c)).copied().unwrap_or_default()
+        if let Some(s) = self.styles.get(&(r, c)) {
+            return *s;
+        }
+        let fs = &self.file_styles;
+        self.index(r, c)
+            .and_then(|i| fs.ids.get(i))
+            .and_then(|&id| fs.palette.get(id as usize))
+            .copied()
+            .unwrap_or_default()
+    }
+
+    /// Sets the styles and merged ranges read from the file.
+    pub(crate) fn with_file_styles(
+        mut self,
+        styles: FileStyles,
+        merges: Vec<(CellPos, CellPos)>,
+    ) -> Sheet {
+        debug_assert!(styles.ids.is_empty() || styles.ids.len() == self.cells.len());
+        if styles.ids.iter().any(|&id| id != 0) {
+            self.file_styles = styles;
+        }
+        self.merges = merges;
+        self
+    }
+
+    /// Merged cell ranges as (top left, bottom right).
+    pub fn merges(&self) -> &[(CellPos, CellPos)] {
+        &self.merges
+    }
+
+    /// The merged range `(r, c)` lies in, if any.
+    pub fn merged(&self, r: u32, c: u32) -> Option<(CellPos, CellPos)> {
+        self.merges
+            .iter()
+            .find(|(a, b)| (a.row..=b.row).contains(&r) && (a.col..=b.col).contains(&c))
+            .copied()
     }
 
     /// Replaces one cell, growing the sheet when it lies outside. `formatted` is the
@@ -128,6 +186,9 @@ impl Sheet {
             Some(f) => self.formatted.insert((r, c), f.into_boxed_str()),
             None => self.formatted.remove(&(r, c)),
         };
+        if let Some(id) = self.file_styles.ids.get_mut(i) {
+            *id = 0; // the edit's style replaces the file's
+        }
         if style == CellStyle::default() {
             self.styles.remove(&(r, c));
         } else {
@@ -137,18 +198,16 @@ impl Sheet {
     }
 
     fn grow(&mut self, rows: u32, cols: u32) {
+        if !self.file_styles.ids.is_empty() {
+            let ids = std::mem::take(&mut self.file_styles.ids);
+            self.file_styles.ids = regrid(ids, self.cols, rows, cols, 0);
+        }
         if cols == self.cols {
             self.cells
                 .resize(rows as usize * cols as usize, CellValue::Empty);
         } else {
-            let mut cells = vec![CellValue::Empty; rows as usize * cols as usize];
-            if self.cols > 0 {
-                for (r, row) in self.cells.chunks(self.cols as usize).enumerate() {
-                    let start = r * cols as usize;
-                    cells[start..start + row.len()].clone_from_slice(row);
-                }
-            }
-            self.cells = cells;
+            let cells = std::mem::take(&mut self.cells);
+            self.cells = regrid(cells, self.cols, rows, cols, CellValue::Empty);
         }
         self.rows = rows;
         self.cols = cols;
@@ -231,6 +290,19 @@ impl Sheet {
                 .collect()
         })
     }
+}
+
+/// Row-major `items` of `old_cols` columns laid out in a `rows` × `cols` grid, padded
+/// with `pad`.
+fn regrid<T: Clone>(items: Vec<T>, old_cols: u32, rows: u32, cols: u32, pad: T) -> Vec<T> {
+    let mut out = vec![pad; rows as usize * cols as usize];
+    if old_cols > 0 {
+        for (r, row) in items.chunks(old_cols as usize).enumerate() {
+            let start = r * cols as usize;
+            out[start..start + row.len()].clone_from_slice(row);
+        }
+    }
+    out
 }
 
 #[cfg(test)]

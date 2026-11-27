@@ -26,6 +26,8 @@ question was: why not port that small piece to Rust?
   detected; numbers become numbers, while postcodes, IDs and dates stay exactly as written
 - Numbers, text, dates, durations, booleans and error values; formulas show their stored
   result in the cell and the formula itself in the formula bar
+- Shows the cell formats of xlsx files as Excel does: fill colours, bold, italic and
+  coloured text, font sizes, horizontal alignment and merged cells
 - Search across the current sheet or all sheets, as plain text or regular expression
 - Select cells, rows, columns or everything; copy as tab-separated text that pastes into
   Excel, Google Sheets or an email, and paste such text back in (Ctrl+V). Cells copied

@@ -10,10 +10,12 @@ use std::path::Path;
 use ironcalc::base::cell::CellValue as IcValue;
 use ironcalc::base::expressions::types::Area;
 use ironcalc::base::types::Cell;
-use ironcalc::base::types::Color;
+use ironcalc::base::types::{Color, HorizontalAlignment};
 use ironcalc::base::{Model, UserModel};
 
-use crate::{CellError, CellPos, CellStyle, CellValue, Locale, Query, Selection, Sheet, find_refs};
+use crate::{
+    CellError, CellPos, CellStyle, CellValue, HAlign, Locale, Query, Selection, Sheet, find_refs,
+};
 
 mod fill;
 mod paste;
@@ -756,6 +758,17 @@ impl EditSession {
             // black text and white fill are what the theme shows anyway
             color: rgb(&style.font.color).filter(|&c| c != [0, 0, 0]),
             fill: rgb(&style.fill.color).filter(|&c| c != [255, 255, 255]),
+            size: u16::try_from(style.font.sz.saturating_mul(10))
+                .ok()
+                .filter(|&s| s > 0 && s != 110),
+            align: style.alignment.and_then(|a| match a.horizontal {
+                HorizontalAlignment::Left => Some(HAlign::Left),
+                HorizontalAlignment::Center | HorizontalAlignment::CenterContinuous => {
+                    Some(HAlign::Center)
+                }
+                HorizontalAlignment::Right => Some(HAlign::Right),
+                _ => None,
+            }),
         }
     }
 

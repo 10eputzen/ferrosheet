@@ -25,45 +25,57 @@ pub fn frozen_panes(path: &Path) -> Vec<(u32, u32)> {
     read(path).unwrap_or_default()
 }
 
-fn read(path: &Path) -> Option<Vec<(u32, u32)>> {
+type Zip = zip::ZipArchive<std::io::BufReader<std::fs::File>>;
+
+fn text(zip: &mut Zip, name: &str, limit: u64) -> Option<String> {
+    let entry = zip.by_name(name).ok()?;
+    let mut s = String::new();
+    entry.take(limit).read_to_string(&mut s).ok()?;
+    Some(s)
+}
+
+/// The value of attribute `name` in the tag text `tag`.
+pub(crate) fn attr(tag: &str, name: &str) -> Option<String> {
+    let re = Regex::new(&format!(r#"(?:^|\s){name}\s*=\s*"([^"]*)""#)).ok()?;
+    re.captures(tag).map(|c| c[1].to_owned())
+}
+
+/// The opened `.xlsx` and the zip entry of each sheet, in workbook order (`None` for a
+/// sheet whose part is not found).
+pub(crate) fn sheet_parts(path: &Path) -> Option<(Zip, Vec<Option<String>>)> {
     let file = std::fs::File::open(path).ok()?;
     let mut zip = zip::ZipArchive::new(std::io::BufReader::new(file)).ok()?;
-    let text = |zip: &mut zip::ZipArchive<_>, name: &str, limit: u64| -> Option<String> {
-        let entry = zip.by_name(name).ok()?;
-        let mut s = String::new();
-        entry.take(limit).read_to_string(&mut s).ok()?;
-        Some(s)
-    };
     let workbook = text(&mut zip, "xl/workbook.xml", 4 << 20)?;
     let rels = text(&mut zip, "xl/_rels/workbook.xml.rels", 4 << 20)?;
-
-    let attr = |tag: &str, name: &str| -> Option<String> {
-        let re = Regex::new(&format!(r#"(?:^|\s){name}\s*=\s*"([^"]*)""#)).ok()?;
-        re.captures(tag).map(|c| c[1].to_owned())
-    };
     let targets: HashMap<String, String> = Regex::new(r"<(?:\w+:)?Relationship\b[^>]*>")
         .ok()?
         .find_iter(&rels)
         .filter_map(|m| Some((attr(m.as_str(), "Id")?, attr(m.as_str(), "Target")?)))
         .collect();
-    let sheets: Vec<String> = Regex::new(r"<(?:\w+:)?sheet\b[^>]*>")
+    let sheets = Regex::new(r"<(?:\w+:)?sheet\b[^>]*>")
         .ok()?
         .find_iter(&workbook)
-        .map(|m| attr(m.as_str(), r"r:id").unwrap_or_default())
+        .map(|m| {
+            let target = targets.get(&attr(m.as_str(), r"r:id")?)?;
+            Some(match target.strip_prefix('/') {
+                Some(abs) => abs.to_owned(),
+                None => format!("xl/{target}"),
+            })
+        })
         .collect();
+    Some((zip, sheets))
+}
 
+fn read(path: &Path) -> Option<Vec<(u32, u32)>> {
+    let (mut zip, sheets) = sheet_parts(path)?;
     let pane = Regex::new(r"<(?:\w+:)?pane\b[^>]*>").ok()?;
     let out = sheets
         .iter()
-        .map(|id| {
-            let Some(target) = targets.get(id) else {
+        .map(|name| {
+            let Some(name) = name else {
                 return (0, 0);
             };
-            let name = match target.strip_prefix('/') {
-                Some(abs) => abs.to_owned(),
-                None => format!("xl/{target}"),
-            };
-            let Some(head) = text(&mut zip, &name, HEAD_BYTES) else {
+            let Some(head) = text(&mut zip, name, HEAD_BYTES) else {
                 return (0, 0);
             };
             let Some(tag) = pane.find(&head).map(|m| m.as_str().to_owned()) else {
