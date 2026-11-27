@@ -617,6 +617,8 @@ pub fn show(
                         let color = match style.color {
                             _ if matches!(value, CellValue::Error(_)) => visuals.error_fg_color,
                             Some([red, g, b]) => Color32::from_rgb(red, g, b),
+                            // on a fill, text keeps the file's black even in dark mode
+                            None if style.fill.is_some() => Color32::BLACK,
                             None => pal.text,
                         };
                         let font = match style.size {
