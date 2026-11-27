@@ -6,8 +6,8 @@ use eframe::egui::{
     Stroke, UiBuilder, Vec2, pos2, vec2,
 };
 use ferrosheet_core::{
-    CellPos, CellStyle, CellValue, Fill, Lines, Selection, Sheet, column_name, find_refs, ref_slot,
-    ref_text, splice,
+    CellPos, CellStyle, CellValue, Fill, HAlign, Lines, Selection, Sheet, column_name, find_refs,
+    ref_slot, ref_text, splice,
 };
 
 #[cfg(test)]
@@ -515,9 +515,35 @@ pub fn show(
                     }
                     let painter = painter.with_clip_rect(pane_clip(ra, ca).intersect(view));
 
-                    // fill colours set by the user
+                    // merged ranges reaching into this pane; one that crosses the
+                    // frozen edge is drawn as separate cells
+                    let merges: Vec<(CellPos, CellPos)> = sheet
+                        .merges()
+                        .iter()
+                        .filter(|(a, b)| {
+                            a.row < rb
+                                && b.row >= ra
+                                && a.col < cb
+                                && b.col >= ca
+                                && b.row < rows
+                                && b.col < cols
+                                && (a.row < fr) == (b.row < fr)
+                                && (a.col < fc) == (b.col < fc)
+                        })
+                        .copied()
+                        .collect();
+                    let in_merge = |r: u32, c: u32| {
+                        merges.iter().any(|(a, b)| {
+                            (a.row..=b.row).contains(&r) && (a.col..=b.col).contains(&c)
+                        })
+                    };
+
+                    // fill colours from the file or set by the user
                     for r in ra..rb.min(sheet.rows) {
                         for c in ca..cb.min(sheet.cols) {
+                            if in_merge(r, c) {
+                                continue;
+                            }
                             if let Some([red, g, b]) = sheet.style(r, c).fill {
                                 let fill = Color32::from_rgb(red, g, b);
                                 painter.rect_filled(cell_rect(r, c), 0.0, fill);
@@ -560,47 +586,86 @@ pub fn show(
                         painter.line_segment([pos2(left, y), pos2(right, y)], pal.row_line);
                     }
 
+                    // merged ranges: one cell in the fill of their top left cell, over
+                    // the grid lines inside (the outer lines stay)
+                    for (a, b) in &merges {
+                        let rect = cell_rect(a.row, a.col).union(cell_rect(b.row, b.col));
+                        let inner = Rect::from_min_max(rect.min, rect.max - vec2(1.0, 1.0));
+                        let bg = match sheet.style(a.row, a.col).fill {
+                            Some([red, g, b]) => Color32::from_rgb(red, g, b),
+                            None => pal.cell_bg,
+                        };
+                        painter.rect_filled(inner, 0.0, bg);
+                        let selected = st.selection.cell_count() > 1
+                            && a.row <= br.row
+                            && b.row >= tl.row
+                            && a.col <= br.col
+                            && b.col >= tl.col;
+                        if selected {
+                            painter.rect_filled(inner, 0.0, sel_fill);
+                        }
+                    }
+
                     // text
+                    let draw_text = |r: u32, c: u32, rect: Rect| {
+                        let text = sheet.display(r, c);
+                        if text.is_empty() {
+                            return;
+                        }
+                        let value = sheet.value(r, c);
+                        let style = sheet.style(r, c);
+                        let color = match style.color {
+                            _ if matches!(value, CellValue::Error(_)) => visuals.error_fg_color,
+                            Some([red, g, b]) => Color32::from_rgb(red, g, b),
+                            None => pal.text,
+                        };
+                        let font = match style.size {
+                            Some(tenths) => FontId::new(
+                                font.size * f32::from(tenths) / 110.0,
+                                font.family.clone(),
+                            ),
+                            None => font.clone(),
+                        };
+                        // Default rows show the first line centred; taller rows show
+                        // all lines from the top, clipped to the cell.
+                        let tall = rect.height() > rh.base() + 1.0;
+                        let h = match style.align {
+                            Some(HAlign::Left) => egui::Align::Min,
+                            Some(HAlign::Center) => egui::Align::Center,
+                            Some(HAlign::Right) => egui::Align::Max,
+                            None if value.is_numeric() => egui::Align::Max,
+                            None => egui::Align::Min,
+                        };
+                        let x = match h {
+                            egui::Align::Min => rect.left() + PAD,
+                            egui::Align::Center => rect.center().x,
+                            egui::Align::Max => rect.right() - PAD,
+                        };
+                        let (v, y) = if tall {
+                            (egui::Align::Min, rect.top() + TEXT_TOP)
+                        } else {
+                            (egui::Align::Center, rect.center().y)
+                        };
+                        let line_text = if tall {
+                            &*text
+                        } else {
+                            text.lines().next().unwrap_or("")
+                        };
+                        let clipped =
+                            painter.with_clip_rect(rect.shrink(1.0).intersect(painter.clip_rect()));
+                        let anchor = Align2([h, v]);
+                        cell_text(&clipped, pos2(x, y), anchor, line_text, &font, color, style);
+                    };
                     for r in ra..rb.min(sheet.rows) {
                         for c in ca..cb.min(sheet.cols) {
-                            let text = sheet.display(r, c);
-                            if text.is_empty() {
-                                continue;
+                            if !in_merge(r, c) {
+                                draw_text(r, c, cell_rect(r, c));
                             }
-                            let value = sheet.value(r, c);
-                            let style = sheet.style(r, c);
-                            let color = match style.color {
-                                _ if matches!(value, CellValue::Error(_)) => visuals.error_fg_color,
-                                Some([red, g, b]) => Color32::from_rgb(red, g, b),
-                                None => pal.text,
-                            };
-                            let rect = cell_rect(r, c);
-                            // Default rows show the first line centred; taller rows show
-                            // all lines from the top, clipped to the cell.
-                            let tall = rect.height() > rh.base() + 1.0;
-                            let (anchor, pos) = match (value.is_numeric(), tall) {
-                                (true, false) => {
-                                    (Align2::RIGHT_CENTER, rect.right_center() - vec2(PAD, 0.0))
-                                }
-                                (false, false) => {
-                                    (Align2::LEFT_CENTER, rect.left_center() + vec2(PAD, 0.0))
-                                }
-                                (true, true) => {
-                                    (Align2::RIGHT_TOP, rect.right_top() + vec2(-PAD, TEXT_TOP))
-                                }
-                                (false, true) => {
-                                    (Align2::LEFT_TOP, rect.left_top() + vec2(PAD, TEXT_TOP))
-                                }
-                            };
-                            let line_text = if tall {
-                                &*text
-                            } else {
-                                text.lines().next().unwrap_or("")
-                            };
-                            let clipped = painter
-                                .with_clip_rect(rect.shrink(1.0).intersect(painter.clip_rect()));
-                            cell_text(&clipped, pos, anchor, line_text, &font, color, style);
                         }
+                    }
+                    for (a, b) in &merges {
+                        let rect = cell_rect(a.row, a.col).union(cell_rect(b.row, b.col));
+                        draw_text(a.row, a.col, rect);
                     }
                 };
                 paint_pane(r0, r1, c0, c1);
@@ -625,12 +690,19 @@ pub fn show(
                 let cur = st.selection.cursor;
                 if cur.row < rows && cur.col < cols {
                     let painter = painter.with_clip_rect(pane_clip(cur.row, cur.col));
-                    painter.rect_stroke(
-                        cell_rect(cur.row, cur.col),
-                        0.0,
-                        sel_stroke,
-                        egui::StrokeKind::Inside,
-                    );
+                    // a merged cell is framed as a whole
+                    let frame = match sheet.merged(cur.row, cur.col) {
+                        Some((a, b))
+                            if b.row < rows
+                                && b.col < cols
+                                && (a.row < fr) == (b.row < fr)
+                                && (a.col < fc) == (b.col < fc) =>
+                        {
+                            cell_rect(a.row, a.col).union(cell_rect(b.row, b.col))
+                        }
+                        _ => cell_rect(cur.row, cur.col),
+                    };
+                    painter.rect_stroke(frame, 0.0, sel_stroke, egui::StrokeKind::Inside);
                 }
 
                 // fill handle, and the frame of where a drag on it extends the selection

@@ -13,7 +13,9 @@ pub const PREVIEW_ROWS: u32 = 200;
 use chrono::NaiveDate;
 
 use crate::csv::TextFormat;
-use crate::{CellError, CellValue, Locale, Sheet};
+use crate::sheet::FileStyles;
+use crate::styles::{self, Palette};
+use crate::{CellError, CellPos, CellValue, Locale, Sheet};
 
 /// File extensions ferrosheet can open.
 pub const EXTENSIONS: &[&str] = &["xls", "xlsx", "xlsm", "xlsb", "ods", "csv", "tsv"];
@@ -152,7 +154,9 @@ impl Workbook {
             let idx = (r0 as usize + r) * cols as usize + c0 as usize + c;
             cells[idx] = convert(data);
         }
-        Ok(Sheet::from_cells(name, rows, cols, cells, self.locale))
+        let (file_styles, merges) = file_styles(inner, &name, rows, cols);
+        Ok(Sheet::from_cells(name, rows, cols, cells, self.locale)
+            .with_file_styles(file_styles, merges))
     }
 
     /// Like [`load_sheet`](Self::load_sheet), but for big `.xlsx` sheets calls `preview`
@@ -178,9 +182,12 @@ impl Workbook {
                 return Ok(None); // small sheet or implausible size: the normal path
             }
             let mut cells = vec![CellValue::Empty; rows as usize * cols as usize];
+            let mut palette = Palette::new();
+            let record_ids = palette.ids_for(reader.styles());
+            let mut ids: Vec<u16> = Vec::new();
             let mut preview = Some(preview);
-            while let Some(cell) = reader
-                .next_cell()
+            while let Some((cell, style)) = reader
+                .next_cell_with_style_id()
                 .map_err(|e| LoadError::Format(e.to_string()))?
             {
                 let (r, c) = cell.get_position();
@@ -190,28 +197,35 @@ impl Workbook {
                 if r >= PREVIEW_ROWS
                     && let Some(send) = preview.take()
                 {
-                    let first = cells[..(PREVIEW_ROWS * cols) as usize].to_vec();
-                    send(Sheet::from_cells(
-                        name.clone(),
-                        PREVIEW_ROWS,
-                        cols,
-                        first,
-                        locale,
-                    ));
+                    let n = (PREVIEW_ROWS * cols) as usize;
+                    let first = cells[..n].to_vec();
+                    let first_styles = FileStyles {
+                        palette: palette.styles().to_vec(),
+                        ids: ids.get(..n).map(<[u16]>::to_vec).unwrap_or_default(),
+                    };
+                    send(
+                        Sheet::from_cells(name.clone(), PREVIEW_ROWS, cols, first, locale)
+                            .with_file_styles(first_styles, Vec::new()),
+                    );
                 }
-                cells[r as usize * cols as usize + c as usize] =
-                    convert(&Data::from(cell.get_value().clone()));
+                let i = r as usize * cols as usize + c as usize;
+                cells[i] = convert(&Data::from(cell.get_value().clone()));
+                let id = record_ids.get(style).copied().unwrap_or(0);
+                if id != 0 {
+                    if ids.is_empty() {
+                        ids = vec![0; cells.len()];
+                    }
+                    ids[i] = id;
+                }
             }
-            Ok(Some(Sheet::from_cells(
-                name.clone(),
-                rows,
-                cols,
-                cells,
-                locale,
-            )))
+            Ok(Some((rows, cols, cells, palette.finish(ids))))
         })?;
         match streamed {
-            Some(sheet) => Ok(sheet),
+            Some((rows, cols, cells, file_styles)) => {
+                let merges = guard(|| Ok(styles::xlsx_merges(&self.path, idx))).unwrap_or_default();
+                Ok(Sheet::from_cells(name, rows, cols, cells, locale)
+                    .with_file_styles(file_styles, merges))
+            }
             None => self.load_sheet(idx),
         }
     }
@@ -246,6 +260,33 @@ impl Workbook {
             .cloned()
             .ok_or_else(|| LoadError::Format(format!("sheet {idx} is missing")))
     }
+}
+
+/// The cell formats and merged ranges of a sheet. They only change the look, so a
+/// file whose formats cannot be read still opens, just plain.
+fn file_styles(
+    inner: &mut Sheets<BufReader<File>>,
+    name: &str,
+    rows: u32,
+    cols: u32,
+) -> (FileStyles, Vec<(CellPos, CellPos)>) {
+    let file_styles = guard(|| Ok(inner.worksheet_style(name).ok()))
+        .ok()
+        .flatten()
+        .map(|range| styles::from_range(&range, rows, cols))
+        .unwrap_or_default();
+    let merges = guard(|| {
+        Ok(match inner {
+            Sheets::Xlsx(x) => x.merge_cells_by_sheet_name(name).ok(),
+            Sheets::Xls(x) => x.merge_cells_by_sheet_name(name).ok(),
+            _ => None,
+        })
+    })
+    .ok()
+    .flatten()
+    .map(styles::merges)
+    .unwrap_or_default();
+    (file_styles, merges)
 }
 
 /// Runs a parser call and turns a panic into an error. Damaged files can make the

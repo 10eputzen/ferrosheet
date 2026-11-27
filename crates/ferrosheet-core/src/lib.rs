@@ -10,6 +10,7 @@ mod search;
 mod selection;
 mod sheet;
 mod sort;
+mod styles;
 mod value;
 mod workbook;
 
@@ -23,7 +24,7 @@ pub use frozen::frozen_panes;
 pub use losses::{Loss, save_losses};
 pub use search::{Query, find_all};
 pub use selection::{CellPos, CopyFormat, Selection, copy_text};
-pub use sheet::{CellStyle, Sheet, Summary};
+pub use sheet::{CellStyle, HAlign, Sheet, Summary};
 pub use sort::{SortRange, sort_order};
 pub use value::{CellError, CellValue, Locale, today_input};
 pub use workbook::{EXTENSIONS, LoadError, PREVIEW_ROWS, Workbook, cell_address, column_name};
